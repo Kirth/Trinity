@@ -823,9 +823,14 @@ impl<W: LayoutElement> Layout<W> {
                     // Also if empty_workspace_above_first is set and there are only 2 workspaces
                     // left, both will be empty and one of them needs to be removed.
                     // clean_up_workspaces takes care of this.
+                    //
+                    // With positional workspaces, moving away a named workspace may leave gaps that
+                    // are no longer below any occupied workspace.
                     if stopped_ws_switch
                         || (source.options.layout.empty_workspace_above_first
                             && source.workspaces.len() == 2)
+                        || (source.options.layout.positional_workspaces
+                            && source.workspace_switch.is_none())
                     {
                         source.clean_up_workspaces();
                     }
@@ -1198,6 +1203,15 @@ impl<W: LayoutElement> Layout<W> {
                     for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
                         if ws.has_window(window) {
                             let removed = ws.remove_tile(window, transaction);
+
+                            // With positional workspaces, removing the last window may also make
+                            // the empty workspaces below it removable, so do a full clean-up.
+                            if mon.options.layout.positional_workspaces {
+                                if mon.workspace_switch.is_none() {
+                                    mon.clean_up_workspaces();
+                                }
+                                return Some(removed);
+                            }
 
                             // Clean up empty workspaces that are not active and not last.
                             if !ws.has_windows_or_name()

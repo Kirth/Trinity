@@ -2904,6 +2904,108 @@ fn move_window_to_empty_workspace_above_first() {
     check_ops_with_options(options, ops);
 }
 
+fn positional_options(empty_workspace_above_first: bool) -> Options {
+    Options {
+        layout: niri_config::Layout {
+            positional_workspaces: true,
+            empty_workspace_above_first,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn single_monitor(layout: &Layout<TestWindow>) -> &Monitor<TestWindow> {
+    let MonitorSet::Normal { monitors, .. } = &layout.monitor_set else {
+        unreachable!()
+    };
+    &monitors[0]
+}
+
+#[test]
+fn positional_workspaces_keep_gaps() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FocusWorkspace(6),
+        Op::CompleteAnimations,
+        Op::AddWindow {
+            params: TestWindowParams::new(2),
+        },
+        Op::FocusWorkspace(0),
+        Op::CompleteAnimations,
+    ];
+    let layout = check_ops_with_options(positional_options(false), ops);
+    let mon = single_monitor(&layout);
+    assert_eq!(mon.workspaces.len(), 8);
+    assert!(mon.workspaces[6].has_window(&2));
+    assert!((1..6).all(|idx| !mon.workspaces[idx].has_windows()));
+
+    // Closing the window on the last occupied workspace collapses the gaps.
+    let mut layout = layout;
+    check_ops_on_layout(&mut layout, [Op::CloseWindow(2)]);
+    let mon = single_monitor(&layout);
+    assert_eq!(mon.workspaces.len(), 2);
+}
+
+#[test]
+fn positional_workspaces_leaving_empty_target_collapses() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::FocusWorkspace(6),
+        Op::CompleteAnimations,
+        Op::FocusWorkspace(0),
+        Op::CompleteAnimations,
+    ];
+    let layout = check_ops_with_options(positional_options(false), ops);
+    assert_eq!(single_monitor(&layout).workspaces.len(), 2);
+}
+
+#[test]
+fn positional_workspaces_move_column() {
+    for (above_first, offset) in [(false, 0), (true, 1)] {
+        let ops = [
+            Op::AddOutput(1),
+            Op::AddWindow {
+                params: TestWindowParams::new(1),
+            },
+            Op::AddWindow {
+                params: TestWindowParams::new(2),
+            },
+            Op::MoveColumnToWorkspace(6 + offset, false),
+            Op::CompleteAnimations,
+        ];
+        let layout = check_ops_with_options(positional_options(above_first), ops);
+        let mon = single_monitor(&layout);
+        assert_eq!(mon.workspaces.len(), 8 + offset);
+        assert!(mon.workspaces[6 + offset].has_window(&2));
+        assert_eq!(mon.active_workspace_idx, offset);
+    }
+}
+
+#[test]
+fn positional_workspaces_move_window() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddWindow {
+            params: TestWindowParams::new(1),
+        },
+        Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 4,
+        },
+        Op::CompleteAnimations,
+    ];
+    let layout = check_ops_with_options(positional_options(false), ops);
+    let mon = single_monitor(&layout);
+    assert!(mon.workspaces[4].has_window(&1));
+}
+
 #[test]
 fn move_window_to_different_output() {
     let ops = [
@@ -4007,6 +4109,7 @@ prop_compose! {
         center_focused_column in prop::option::of(arbitrary_center_focused_column()),
         always_center_single_column in prop::option::of(any::<bool>().prop_map(Flag)),
         empty_workspace_above_first in prop::option::of(any::<bool>().prop_map(Flag)),
+        positional_workspaces in prop::option::of(any::<bool>().prop_map(Flag)),
     ) -> niri_config::LayoutPart {
         niri_config::LayoutPart {
             gaps,
@@ -4014,6 +4117,7 @@ prop_compose! {
             center_focused_column,
             always_center_single_column,
             empty_workspace_above_first,
+            positional_workspaces,
             focus_ring,
             border,
             shadow,

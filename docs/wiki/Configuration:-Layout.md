@@ -10,6 +10,7 @@ layout {
     center-focused-column "never"
     always-center-single-column
     empty-workspace-above-first
+    positional-workspaces
     default-column-display "tabbed"
     background-color "#003300"
 
@@ -151,6 +152,25 @@ If set, niri will always add an empty workspace at the very start, in addition t
 ```kdl
 layout {
     empty-workspace-above-first
+}
+```
+
+### `positional-workspaces`
+
+<sup>Since: next release</sup>
+
+If set, workspace indices in actions like `focus-workspace 7` and `move-column-to-workspace 7` refer to fixed positions.
+When there are fewer workspaces, niri adds empty ones to reach that position instead of going to the last workspace.
+
+Empty workspaces are kept as long as they are below a workspace that has windows (or a name), or below the focused workspace.
+So if you put a window on workspace 7, it stays at 7 even when workspaces 3–6 are empty.
+Once no workspace below them has windows anymore, the empty workspaces at the end are removed as usual.
+
+The empty workspaces in between are not kept when the monitor is disconnected.
+
+```kdl
+layout {
+    positional-workspaces
 }
 ```
 

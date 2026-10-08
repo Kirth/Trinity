@@ -1,4 +1,4 @@
-use std::cmp::min;
+use std::cmp::{max, min};
 use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
@@ -655,8 +655,14 @@ impl<W: LayoutElement> Monitor<W> {
         } else {
             0
         };
+        let keep_up_to = self.positional_anchor_idx();
         for idx in (range_start..self.workspaces.len() - 1).rev() {
             if self.active_workspace_idx == idx {
+                continue;
+            }
+
+            // With positional workspaces, empty workspaces below the anchor are kept as gaps.
+            if keep_up_to.is_some_and(|anchor| idx <= anchor) {
                 continue;
             }
 
@@ -675,6 +681,34 @@ impl<W: LayoutElement> Monitor<W> {
             assert!(!self.workspaces[1].has_windows_or_name());
             self.workspaces.remove(1);
             self.active_workspace_idx = 0;
+        }
+    }
+
+    /// Returns the index up to which empty workspaces are kept when positional workspaces are
+    /// enabled: the last workspace with windows or a name, or the active one, whichever is lower
+    /// down.
+    fn positional_anchor_idx(&self) -> Option<usize> {
+        if !self.options.layout.positional_workspaces {
+            return None;
+        }
+
+        let last_occupied = self
+            .workspaces
+            .iter()
+            .rposition(|ws| ws.has_windows_or_name())
+            .unwrap_or(0);
+        Some(max(last_occupied, self.active_workspace_idx))
+    }
+
+    /// Adds empty workspaces at the bottom so that `idx` exists, if positional workspaces are
+    /// enabled.
+    fn ensure_positional_workspace(&mut self, idx: usize) {
+        if !self.options.layout.positional_workspaces {
+            return;
+        }
+
+        while self.workspaces.len() <= idx {
+            self.add_workspace_bottom();
         }
     }
 
@@ -834,6 +868,12 @@ impl<W: LayoutElement> Monitor<W> {
         };
         let source_id = self.workspaces[source_workspace_idx].id();
 
+        let workspace = &self.workspaces[source_workspace_idx];
+        if window.is_none() && workspace.active_window().is_none() {
+            return;
+        }
+
+        self.ensure_positional_workspace(idx);
         let new_idx = min(idx, self.workspaces.len() - 1);
         if new_idx == source_workspace_idx {
             return;
@@ -920,6 +960,12 @@ impl<W: LayoutElement> Monitor<W> {
     pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
         let source_workspace_idx = self.active_workspace_idx;
 
+        let workspace = &self.workspaces[source_workspace_idx];
+        if !workspace.floating_is_active() && workspace.scrolling().active_column().is_none() {
+            return;
+        }
+
+        self.ensure_positional_workspace(idx);
         let new_idx = min(idx, self.workspaces.len() - 1);
         if new_idx == source_workspace_idx {
             return;
@@ -1005,10 +1051,12 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn switch_workspace(&mut self, idx: usize) {
+        self.ensure_positional_workspace(idx);
         self.activate_workspace(min(idx, self.workspaces.len() - 1));
     }
 
     pub fn switch_workspace_auto_back_and_forth(&mut self, idx: usize) {
+        self.ensure_positional_workspace(idx);
         let idx = min(idx, self.workspaces.len() - 1);
 
         if idx == self.active_workspace_idx {
@@ -1200,6 +1248,9 @@ impl<W: LayoutElement> Monitor<W> {
             }
         }
 
+        let positional_turned_off =
+            self.options.layout.positional_workspaces && !options.layout.positional_workspaces;
+
         for ws in &mut self.workspaces {
             ws.update_config(options.clone());
         }
@@ -1209,6 +1260,11 @@ impl<W: LayoutElement> Monitor<W> {
 
         self.base_options = base_options;
         self.options = options;
+
+        // Remove the gaps that positional workspaces were keeping.
+        if positional_turned_off && self.workspace_switch.is_none() {
+            self.clean_up_workspaces();
+        }
     }
 
     pub fn update_layout_config(&mut self, layout_config: Option<niri_config::LayoutPart>) -> bool {
@@ -2177,6 +2233,10 @@ impl<W: LayoutElement> Monitor<W> {
         } else {
             0
         };
+        //
+        // With positional workspaces, empty workspaces below the anchor (the last occupied or the
+        // active workspace) are kept as gaps.
+        let keep_up_to = self.positional_anchor_idx();
         if self.workspace_switch.is_none() {
             for (idx, ws) in self
                 .workspaces
@@ -2187,7 +2247,9 @@ impl<W: LayoutElement> Monitor<W> {
                 // skip last
                 .skip(1)
             {
-                if idx != self.active_workspace_idx {
+                if idx != self.active_workspace_idx
+                    && !keep_up_to.is_some_and(|anchor| idx <= anchor)
+                {
                     assert!(
                         ws.has_windows_or_name(),
                         "non-active workspace can't be empty and unnamed except the last one"
