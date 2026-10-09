@@ -148,6 +148,17 @@ binds {
 }
 ```
 
+Each container gets an outline and a label for its layout:
+
+- `H`, blue: `splith`, children side by side.
+- `V`, green: `splitv`, children on top of each other.
+- `T`, orange: `tabbed`.
+- `S`, purple: `stacking`.
+
+Lines in the container's colour divide its children.
+The focused container is drawn in white.
+A new window opens right after the focused window, in the same container: to its right in an `H` container, below it in a `V` container.
+
 ### Differences from i3
 
 - Tabs show as colored bars without window titles.

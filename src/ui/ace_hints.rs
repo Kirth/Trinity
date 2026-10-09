@@ -1,22 +1,14 @@
 //! Ace-window-style hints: a label on every visible window, typing it focuses the window.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::f64::consts::PI;
-
-use niri_config::Color;
 use ordered_float::NotNan;
-use pangocairo::cairo::{self, ImageSurface};
-use pangocairo::pango::FontDescription;
 use smithay::backend::renderer::element::Kind;
-use smithay::reexports::gbm::Format as Fourcc;
-use smithay::utils::{Logical, Point, Transform};
+use smithay::utils::{Logical, Point};
 
+use crate::render_helpers::label::{render_pill, LabelCache};
 use crate::render_helpers::memory::MemoryBuffer;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
-use crate::utils::to_physical_precise_round;
 use crate::window::mapped::MappedId;
 
 /// Keys used for the labels, home row first.
@@ -24,7 +16,8 @@ const KEYS: &[char] = &['a', 's', 'd', 'f', 'j', 'k', 'l'];
 const FONT: &str = "sans bold 15px";
 /// Radius of the label circle, in logical pixels.
 const RADIUS: f64 = 14.;
-const OUTLINE: f64 = 2.;
+/// Fill of the label circle: a translucent dark grey.
+const FILL: [f64; 4] = [0.12, 0.12, 0.12, 0.7];
 /// Offset of the label from the window's top-left corner, in logical pixels.
 pub const LABEL_OFFSET: f64 = 6.;
 
@@ -45,12 +38,10 @@ struct Session {
     typed: String,
 }
 
-/// Label textures by label, number of typed characters and scale.
-type TextureCache = HashMap<(String, usize, NotNan<f64>), Option<MemoryBuffer>>;
-
 pub struct AceHints {
     session: Option<Session>,
-    textures: RefCell<TextureCache>,
+    /// Label textures by label, number of typed characters and scale.
+    textures: LabelCache<(String, usize, NotNan<f64>)>,
 }
 
 /// Assigns labels to `n` targets: one key each if they fit, otherwise two keys each.
@@ -71,7 +62,7 @@ impl AceHints {
     pub fn new() -> Self {
         Self {
             session: None,
-            textures: RefCell::new(HashMap::new()),
+            textures: LabelCache::new(),
         }
     }
 
@@ -135,7 +126,6 @@ impl AceHints {
         &self,
         renderer: &mut R,
         scale: f64,
-        color: Color,
         windows: impl Iterator<Item = (MappedId, Point<f64, Logical>)>,
         push: &mut dyn FnMut(PrimaryGpuTextureRenderElement),
     ) {
@@ -144,22 +134,18 @@ impl AceHints {
         }
         let _span = tracy_client::span!("AceHints::render");
 
-        let mut textures = self.textures.borrow_mut();
         for (id, loc) in windows {
             let Some((label, typed)) = self.label_for(id) else {
                 continue;
             };
 
             let key = (label.to_owned(), typed, NotNan::new(scale).unwrap());
-            let buffer = textures
-                .entry(key)
-                .or_insert_with(|| render_label(label, typed, scale, color).ok());
-            let Some(buffer) = buffer else {
+            let Some(buffer) = self.textures.get(key, || render_label(label, typed, scale)) else {
                 continue;
             };
 
             let Ok(texture) =
-                TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), buffer)
+                TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer)
             else {
                 continue;
             };
@@ -185,76 +171,12 @@ impl Default for AceHints {
     }
 }
 
-/// Draws a label as white text in a filled, outlined circle (a pill for longer labels). Already
-/// typed characters are dimmed.
-fn render_label(
-    label: &str,
-    typed: usize,
-    scale: f64,
-    color: Color,
-) -> anyhow::Result<MemoryBuffer> {
-    let _span = tracy_client::span!("ace_hints::render_label");
-
-    let mut font = FontDescription::from_string(FONT);
-    font.set_absolute_size(to_physical_precise_round(scale, font.size()));
-
+/// Draws a label in a translucent circle (a pill for longer labels). Already typed characters
+/// are dimmed.
+fn render_label(label: &str, typed: usize, scale: f64) -> anyhow::Result<MemoryBuffer> {
     let (done, rest) = label.split_at(typed.min(label.len()));
     let markup = format!("<span alpha='45%'>{done}</span>{rest}");
-
-    let surface = ImageSurface::create(cairo::Format::ARgb32, 0, 0)?;
-    let cr = cairo::Context::new(&surface)?;
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(&font));
-    layout.set_markup(&markup);
-    let (text_w, text_h) = layout.pixel_size();
-
-    let r = (RADIUS * scale).round();
-    let height = (r * 2.) as i32;
-    let width = i32::max(height, text_w + (r as i32));
-
-    let surface = ImageSurface::create(cairo::Format::ARgb32, width, height)?;
-    let cr = cairo::Context::new(&surface)?;
-
-    // A pill: two half circles joined by a rectangle, a circle when the width equals the height.
-    let line = (OUTLINE * scale).round();
-    let inner = r - line / 2.;
-    let (left, right) = (r, f64::from(width) - r);
-    cr.new_sub_path();
-    cr.arc(right, r, inner, -PI / 2., PI / 2.);
-    cr.arc(left, r, inner, PI / 2., PI * 3. / 2.);
-    cr.close_path();
-    cr.set_source_rgba(
-        f64::from(color.r),
-        f64::from(color.g),
-        f64::from(color.b),
-        f64::from(color.a.max(0.9)),
-    );
-    cr.fill_preserve()?;
-    cr.set_source_rgb(1., 1., 1.);
-    cr.set_line_width(line);
-    cr.stroke()?;
-
-    cr.move_to(
-        (f64::from(width - text_w) / 2.).round(),
-        (f64::from(height - text_h) / 2.).round(),
-    );
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.context().set_round_glyph_positions(false);
-    layout.set_font_description(Some(&font));
-    layout.set_markup(&markup);
-    cr.set_source_rgb(1., 1., 1.);
-    pangocairo::functions::show_layout(&cr, &layout);
-    drop(cr);
-
-    let data = surface.take_data().unwrap();
-    Ok(MemoryBuffer::new(
-        data.to_vec(),
-        Fourcc::Argb8888,
-        (width, height),
-        scale,
-        Transform::Normal,
-    ))
+    render_pill(&markup, FONT, RADIUS, FILL, scale)
 }
 
 #[cfg(test)]

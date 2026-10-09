@@ -9,6 +9,7 @@ use std::rc::Rc;
 use niri_config::utils::MergeWith as _;
 use niri_config::TabIndicatorPosition;
 use niri_ipc::{SizeChange, WindowLayout};
+use ordered_float::NotNan;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
@@ -21,8 +22,11 @@ use super::{ConfigureIntent, HitType, LayoutElement, Options, RemovedTile, Sizin
 use crate::animation::{Animation, Clock};
 use crate::layout::RenderLayer;
 use crate::niri_render_elements;
+use crate::render_helpers::label::{render_pill, LabelCache};
+use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
+use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
@@ -31,8 +35,12 @@ use crate::window::ResolvedWindowRules;
 /// Smallest share of a split container that a child can be resized to.
 const MIN_SHARE: f64 = 0.05;
 
+const DEBUG_LABEL_FONT: &str = "sans bold 12px";
+/// Radius of the debug layout label, in logical pixels.
+const DEBUG_LABEL_RADIUS: f64 = 11.;
+
 /// How a container arranges its children.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerLayout {
     /// Children side by side.
     SplitH,
@@ -149,6 +157,9 @@ pub struct TilingSpace<W: LayoutElement> {
 
     /// Configurable properties of the layout.
     options: Rc<Options>,
+
+    /// Debug layout label textures by layout, focus and scale.
+    debug_labels: LabelCache<(ContainerLayout, bool, NotNan<f64>)>,
 }
 
 niri_render_elements! {
@@ -157,6 +168,7 @@ niri_render_elements! {
         ClosingWindow = ClosingWindowRenderElement,
         TabIndicator = TabIndicatorRenderElement,
         SolidColor = SolidColorRenderElement,
+        Texture = PrimaryGpuTextureRenderElement,
     }
 }
 
@@ -237,11 +249,34 @@ struct Container<W: LayoutElement> {
     /// Tabs for the tabbed and stacked layouts.
     tab_indicator: TabIndicator,
 
-    /// Edges of the debug outline, with their positions, when container debugging is on.
+    /// Edges of the debug outline and dividers between children, with their positions, when
+    /// container debugging is on.
     debug_outline: Vec<(SolidColorBuffer, Point<f64, Logical>)>,
+
+    /// Whether the debug layout label is shown, whether it's focused, and the top-centre point
+    /// it hangs from.
+    debug_label: Option<(bool, Point<f64, Logical>)>,
+}
+
+/// Colour of a container's debug outline, dividers and label.
+fn debug_color(layout: ContainerLayout) -> [f32; 3] {
+    match layout {
+        ContainerLayout::SplitH => [0.3, 0.55, 1.],
+        ContainerLayout::SplitV => [0.3, 0.9, 0.4],
+        ContainerLayout::Tabbed => [1., 0.6, 0.2],
+        ContainerLayout::Stacked => [0.75, 0.4, 1.],
+    }
 }
 
 impl<W: LayoutElement> Node<W> {
+    /// Area of the node in the space, as last laid out.
+    fn rect(&self) -> Rectangle<f64, Logical> {
+        match self {
+            Node::Container(container) => container.rect,
+            Node::Leaf(leaf) => Rectangle::new(leaf.pos, leaf.size),
+        }
+    }
+
     fn as_container(&self) -> Option<&Container<W>> {
         match self {
             Node::Container(container) => Some(container),
@@ -289,6 +324,7 @@ impl<W: LayoutElement> Container<W> {
             rect: Rectangle::default(),
             tab_indicator: TabIndicator::new(options.layout.tab_indicator),
             debug_outline: Vec::new(),
+            debug_label: None,
         };
         rv.update_tab_indicator_config(options);
         rv
@@ -583,6 +619,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             scale,
             clock,
             options,
+            debug_labels: LabelCache::new(),
         }
     }
 
@@ -1568,7 +1605,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     /// Updates the debug outlines of containers: coloured by layout, nested ones inset, and the
-    /// focused container in white.
+    /// focused container in white. Split containers also get dividers between their children
+    /// and a label naming their layout.
     fn update_debug_outlines(&mut self) {
         // The focused container is the focused node after `focus parent`, otherwise the parent
         // of the focused window.
@@ -1592,15 +1630,10 @@ impl<W: LayoutElement> TilingSpace<W> {
                 let (width, color) = if is_focused {
                     (4., [1., 1., 1., 1.])
                 } else {
-                    let rgb = match container.layout {
-                        ContainerLayout::SplitH => [0.3, 0.55, 1.],
-                        ContainerLayout::SplitV => [0.3, 0.9, 0.4],
-                        ContainerLayout::Tabbed => [1., 0.6, 0.2],
-                        ContainerLayout::Stacked => [0.75, 0.4, 1.],
-                    };
+                    let [r, g, b] = debug_color(container.layout);
                     // Premultiplied alpha.
                     let a = 0.8;
-                    (2., [rgb[0] * a, rgb[1] * a, rgb[2] * a, a])
+                    (2., [r * a, g * a, b * a, a])
                 };
 
                 // Inset nested containers so their outlines don't cover their parents'.
@@ -1611,12 +1644,30 @@ impl<W: LayoutElement> TilingSpace<W> {
                 rect.size.h = f64::max(rect.size.h - inset * 2., width * 2.);
 
                 let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
-                let edges = [
+                let mut edges = vec![
                     (Point::from((x, y)), Size::from((w, width))),
                     (Point::from((x, y + h - width)), Size::from((w, width))),
                     (Point::from((x, y)), Size::from((width, h))),
                     (Point::from((x + w - width, y)), Size::from((width, h))),
                 ];
+
+                // Dividers in the middle of the gaps between children.
+                let horizontal = container.layout == ContainerLayout::SplitH;
+                if container.layout.is_split() {
+                    for pair in container.children.windows(2) {
+                        let (a, b) = (pair[0].rect(), pair[1].rect());
+                        if horizontal {
+                            let mid = (a.loc.x + a.size.w + b.loc.x) / 2.;
+                            edges
+                                .push((Point::from((mid - width / 2., y)), Size::from((width, h))));
+                        } else {
+                            let mid = (a.loc.y + a.size.h + b.loc.y) / 2.;
+                            edges
+                                .push((Point::from((x, mid - width / 2.)), Size::from((w, width))));
+                        }
+                    }
+                }
+
                 container.debug_outline.resize_with(edges.len(), || {
                     (SolidColorBuffer::default(), Point::default())
                 });
@@ -1624,8 +1675,12 @@ impl<W: LayoutElement> TilingSpace<W> {
                     buffer.update(size, color);
                     *pos = loc;
                 }
+
+                let anchor = Point::from((x + w / 2., y + width + 4.));
+                container.debug_label = Some((is_focused, anchor));
             } else {
                 container.debug_outline.clear();
+                container.debug_label = None;
             }
 
             let is_tabbed = !container.layout.is_split();
@@ -1649,12 +1704,62 @@ impl<W: LayoutElement> TilingSpace<W> {
         );
     }
 
+    /// Layouts of the containers with a debug label, in tree order.
+    #[cfg(test)]
+    pub fn debug_labels(&self) -> Vec<ContainerLayout> {
+        let mut labels = Vec::new();
+        for_each_container(&self.root, &mut |c| {
+            if c.debug_label.is_some() {
+                labels.push(c.layout);
+            }
+        });
+        labels
+    }
+
     /// Number of debug outline edges currently drawn.
     #[cfg(test)]
     pub fn debug_outline_edges(&self) -> usize {
         let mut count = 0;
         for_each_container(&self.root, &mut |c| count += c.debug_outline.len());
         count
+    }
+
+    fn render_debug_label<R: NiriRenderer>(
+        &self,
+        renderer: &mut R,
+        container: &Container<W>,
+    ) -> Option<PrimaryGpuTextureRenderElement> {
+        let (is_focused, anchor) = container.debug_label?;
+        let layout = container.layout;
+        let scale = self.scale;
+
+        let key = (layout, is_focused, NotNan::new(scale).unwrap());
+        let buffer = self.debug_labels.get(key, || {
+            let text = match layout {
+                ContainerLayout::SplitH => "H",
+                ContainerLayout::SplitV => "V",
+                ContainerLayout::Tabbed => "T",
+                ContainerLayout::Stacked => "S",
+            };
+            let [r, g, b] = debug_color(layout);
+            let alpha = if is_focused { 1. } else { 0.75 };
+            let fill = [f64::from(r), f64::from(g), f64::from(b), alpha];
+            render_pill(text, DEBUG_LABEL_FONT, DEBUG_LABEL_RADIUS, fill, scale)
+        })?;
+        let texture =
+            TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
+
+        let loc = anchor - Point::from((texture.logical_size().w / 2., 0.));
+        let loc = loc.to_physical_precise_round(scale).to_logical(scale);
+        let elem = TextureRenderElement::from_texture_buffer(
+            texture,
+            loc,
+            1.,
+            None,
+            None,
+            Kind::Unspecified,
+        );
+        Some(PrimaryGpuTextureRenderElement(elem))
     }
 
     pub fn render<R: NiriRenderer>(
@@ -1674,6 +1779,12 @@ impl<W: LayoutElement> TilingSpace<W> {
                     let pos = pos.to_physical_precise_round(scale).to_logical(scale);
                     let elem =
                         SolidColorRenderElement::from_buffer(buffer, pos, 1., Kind::Unspecified);
+                    push(elem.into());
+                }
+            });
+
+            for_each_container(&self.root, &mut |container| {
+                if let Some(elem) = self.render_debug_label(ctx.renderer, container) {
                     push(elem.into());
                 }
             });

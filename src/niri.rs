@@ -4545,15 +4545,11 @@ impl Niri {
         // Then, the window hints.
         if self.ace_hints.is_open() {
             let scale = output.current_scale().fractional_scale();
-            let color = self.config.borrow().layout.focus_ring.active_color;
             let windows = self.ace_hint_windows(output);
-            self.ace_hints.render(
-                ctx.renderer,
-                scale,
-                color,
-                windows.into_iter(),
-                &mut |elem| push(elem.into()),
-            );
+            self.ace_hints
+                .render(ctx.renderer, scale, windows.into_iter(), &mut |elem| {
+                    push(elem.into())
+                });
         }
 
         // Then, the Alt-Tab switcher.

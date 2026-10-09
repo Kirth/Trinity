@@ -534,11 +534,51 @@ fn debug_outlines_show_containers() {
     let mut layout = tiling_layout(ops.clone());
     assert_eq!(debug_outline_edges(&mut layout), 0);
 
-    // The root and the vertical container each get four edges.
+    // The root and the vertical container each get four edges and a divider between their
+    // two children.
     let mut options = i3_options();
     options.debug_containers = true;
     let mut all = vec![Op::AddOutput(1)];
     all.extend(ops);
     let mut layout = check_ops_with_options(options, all);
-    assert_eq!(debug_outline_edges(&mut layout), 8);
+    assert_eq!(debug_outline_edges(&mut layout), 10);
+    assert_eq!(
+        debug_labels(&layout),
+        [ContainerLayout::SplitH, ContainerLayout::SplitV]
+    );
+}
+
+fn debug_labels(layout: &Layout<TestWindow>) -> Vec<ContainerLayout> {
+    layout
+        .active_workspace()
+        .unwrap()
+        .tiling()
+        .unwrap()
+        .debug_labels()
+}
+
+#[test]
+fn debug_dividers_between_children() {
+    let mut options = i3_options();
+    options.debug_containers = true;
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
+    let mut layout = check_ops_with_options(options, ops);
+    // Four edges and two dividers.
+    assert_eq!(debug_outline_edges(&mut layout), 6);
+    assert_eq!(debug_labels(&layout), [ContainerLayout::SplitH]);
+
+    // Tabbed containers have no dividers.
+    check_ops_on_layout(
+        &mut layout,
+        [Op::SetContainerLayout(LayoutCommand::Set(
+            ContainerLayout::Tabbed,
+        ))],
+    );
+    assert_eq!(debug_outline_edges(&mut layout), 4);
+    assert_eq!(debug_labels(&layout), [ContainerLayout::Tabbed]);
 }

@@ -366,6 +366,7 @@ debug {
 Draws the outlines of the containers in [i3 mode](./Configuration:-i3-Mode.md).
 They are coloured by layout: blue for `splith`, green for `splitv`, orange for `tabbed` and purple for `stacking`.
 Nested containers are drawn slightly inset, and the focused container is drawn in white.
+Lines in the same colour divide the children of split containers, and a label at the top of each container names its layout: `H`, `V`, `T` or `S`.
 
 ```kdl
 debug {
