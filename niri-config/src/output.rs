@@ -91,8 +91,8 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for OutputLayoutPart {
         for child in node.children() {
             let name = &**child.node_name;
 
-            // layout-mode can only be set globally.
-            if name == "layout-mode" {
+            // layout-mode and pushaway can only be set globally.
+            if matches!(name, "layout-mode" | "pushaway") {
                 ctx.emit_error(DecodeError::unexpected(
                     child,
                     "node",

@@ -22,6 +22,8 @@ pub struct Layout {
     pub empty_workspace_above_first: bool,
     pub positional_workspaces: bool,
     pub layout_mode: LayoutMode,
+    /// In i3 mode, whether moving a window to another workspace leaves the focus behind.
+    pub pushaway: bool,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
     pub struts: Struts,
@@ -47,6 +49,7 @@ impl Default for Layout {
             empty_workspace_above_first: false,
             positional_workspaces: false,
             layout_mode: LayoutMode::I3,
+            pushaway: true,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
             struts: Struts::default(),
@@ -72,6 +75,7 @@ impl MergeWith<LayoutPart> for Layout {
             always_center_single_column,
             empty_workspace_above_first,
             positional_workspaces,
+            pushaway,
             gaps,
         );
 
@@ -128,6 +132,8 @@ pub struct LayoutPart {
     pub positional_workspaces: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub layout_mode: Option<LayoutMode>,
+    #[knuffel(child)]
+    pub pushaway: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
     pub default_column_display: Option<ColumnDisplay>,
     #[knuffel(child, unwrap(argument))]

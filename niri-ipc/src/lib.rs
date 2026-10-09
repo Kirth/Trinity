@@ -508,19 +508,23 @@ pub enum Action {
     MoveWindowToWorkspaceDown {
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the window to the new workspace. If
+        /// If `true`, the focus will follow the window to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
+        ///
+        /// If unset, the focus follows, except in i3 layout mode with `pushaway` on.
+        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set))]
+        focus: Option<bool>,
     },
     /// Move the focused window to the workspace above.
     MoveWindowToWorkspaceUp {
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the window to the new workspace. If
+        /// If `true`, the focus will follow the window to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
+        ///
+        /// If unset, the focus follows, except in i3 layout mode with `pushaway` on.
+        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set))]
+        focus: Option<bool>,
     },
     /// Move a window to a workspace.
     #[cfg_attr(
@@ -540,29 +544,35 @@ pub enum Action {
 
         /// Whether the focus should follow the moved window.
         ///
-        /// If `true` (the default) and the window to move is focused, the focus will follow the
+        /// If `true` and the window to move is focused, the focus will follow the
         /// window to the new workspace. If `false`, the focus will remain on the original
         /// workspace.
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
+        ///
+        /// If unset, the focus follows, except in i3 layout mode with `pushaway` on.
+        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set))]
+        focus: Option<bool>,
     },
     /// Move the focused column to the workspace below.
     MoveColumnToWorkspaceDown {
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
+        /// If `true`, the focus will follow the column to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
+        ///
+        /// If unset, the focus follows, except in i3 layout mode with `pushaway` on.
+        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set))]
+        focus: Option<bool>,
     },
     /// Move the focused column to the workspace above.
     MoveColumnToWorkspaceUp {
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
+        /// If `true`, the focus will follow the column to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
+        ///
+        /// If unset, the focus follows, except in i3 layout mode with `pushaway` on.
+        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set))]
+        focus: Option<bool>,
     },
     /// Move the focused column to a workspace by reference (index or name).
     MoveColumnToWorkspace {
@@ -572,10 +582,12 @@ pub enum Action {
 
         /// Whether the focus should follow the target workspace.
         ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
+        /// If `true`, the focus will follow the column to the new workspace. If
         /// `false`, the focus will remain on the original workspace.
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
+        ///
+        /// If unset, the focus follows, except in i3 layout mode with `pushaway` on.
+        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set))]
+        focus: Option<bool>,
     },
     /// Move the focused workspace down.
     MoveWorkspaceDown {},

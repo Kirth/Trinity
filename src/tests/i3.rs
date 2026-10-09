@@ -329,3 +329,64 @@ fn resize_mode_bind_toggles() {
     tap_key(&mut f, "AD04");
     assert!(!f.niri().resize_mode.is_active());
 }
+
+fn active_workspace_number(f: &mut Fixture) -> Option<u8> {
+    f.niri().layout.active_workspace().unwrap().number()
+}
+
+fn move_to_workspace(n: u8, focus: Option<bool>) -> niri_config::Action {
+    niri_config::Action::MoveWindowToWorkspace(niri_config::WorkspaceReference::Index(n), focus)
+}
+
+#[test]
+fn pushaway_keeps_focus_on_current_workspace() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    f.niri_state().do_action(
+        niri_config::Action::FocusWorkspace(niri_config::WorkspaceReference::Index(1)),
+        false,
+    );
+    assert_eq!(active_workspace_number(&mut f), Some(1));
+
+    // The window goes to workspace 3, and we stay on 1 with the other window focused.
+    let moved = focused_id(&mut f);
+    f.niri_state().do_action(move_to_workspace(3, None), false);
+    f.double_roundtrip(id);
+    assert_eq!(active_workspace_number(&mut f), Some(1));
+    assert_ne!(focused_id(&mut f), moved);
+    assert!(f
+        .niri()
+        .layout
+        .windows()
+        .any(|(_, m)| Some(m.id()) == moved));
+
+    // focus=true on the action still follows the window.
+    f.niri_state()
+        .do_action(move_to_workspace(4, Some(true)), false);
+    f.double_roundtrip(id);
+    assert_eq!(active_workspace_number(&mut f), Some(4));
+}
+
+#[test]
+fn pushaway_off_follows_the_window() {
+    let config = Config::parse_mem(
+        r#"
+        layout {
+            layout-mode "i3"
+            pushaway false
+        }
+        "#,
+    )
+    .unwrap();
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+
+    f.niri_state().do_action(move_to_workspace(3, None), false);
+    f.double_roundtrip(id);
+    assert_eq!(active_workspace_number(&mut f), Some(3));
+}

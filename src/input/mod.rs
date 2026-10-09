@@ -6,7 +6,8 @@ use std::time::Duration;
 use calloop::timer::{TimeoutAction, Timer};
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
-    Action, Bind, Binds, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
+    Action, Bind, Binds, Config, Key, LayoutMode, ModKey, Modifiers, MruDirection, SwitchBinds,
+    Trigger,
 };
 use niri_ipc::{ContainerLayout, LayoutSwitchTarget, SplitDirection};
 use smithay::backend::input::{
@@ -669,6 +670,15 @@ impl State {
         self.handle_bind(bind.clone());
 
         self.start_key_repeat(bind);
+    }
+
+    /// Whether the focus goes along with a window moved to another workspace: as the action
+    /// says, otherwise yes, except in i3 mode with pushaway on.
+    fn follows_moved_window(&self, focus: Option<bool>) -> bool {
+        focus.unwrap_or_else(|| {
+            let layout = &self.niri.config.borrow().layout;
+            !(layout.layout_mode == LayoutMode::I3 && layout.pushaway)
+        })
     }
 
     fn start_key_repeat(&mut self, bind: Bind) {
@@ -1382,18 +1392,21 @@ impl State {
                 self.niri.queue_redraw_all();
             }
             Action::MoveWindowToWorkspaceDown(focus) => {
+                let focus = self.follows_moved_window(focus);
                 self.niri.layout.move_to_workspace_down(focus);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::MoveWindowToWorkspaceUp(focus) => {
+                let focus = self.follows_moved_window(focus);
                 self.niri.layout.move_to_workspace_up(focus);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::MoveWindowToWorkspace(reference, focus) => {
+                let focus = self.follows_moved_window(focus);
                 if let Some((mut output, index)) = self
                     .niri
                     .find_or_create_output_and_workspace_index(reference)
@@ -1439,6 +1452,7 @@ impl State {
                 reference,
                 focus,
             } => {
+                let focus = self.follows_moved_window(focus);
                 let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
                 let window = window.map(|(_, m)| m.window.clone());
                 if let Some(window) = window {
@@ -1494,18 +1508,21 @@ impl State {
                 self.niri.layout.clean_up_i3_workspaces();
             }
             Action::MoveColumnToWorkspaceDown(focus) => {
+                let focus = self.follows_moved_window(focus);
                 self.niri.layout.move_column_to_workspace_down(focus);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::MoveColumnToWorkspaceUp(focus) => {
+                let focus = self.follows_moved_window(focus);
                 self.niri.layout.move_column_to_workspace_up(focus);
                 self.maybe_warp_cursor_to_focus();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::MoveColumnToWorkspace(reference, focus) => {
+                let focus = self.follows_moved_window(focus);
                 if let Some((mut output, index)) = self
                     .niri
                     .find_or_create_output_and_workspace_index(reference)

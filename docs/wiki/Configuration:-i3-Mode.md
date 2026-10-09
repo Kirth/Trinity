@@ -48,6 +48,26 @@ Workspaces are numbered like in i3:
 - `focus-workspace-down` and `focus-workspace-up`, and the workspace switch gestures, go to the next and previous workspace on the output, wrapping around.
 - `move-workspace-up`, `move-workspace-down` and `move-workspace-to-index` do nothing, since workspaces are always sorted.
 
+Moving a window to another workspace leaves you where you are, like in i3: the window goes away and the focus stays on the current workspace.
+To follow the window instead, set `focus=true` on that bind, or turn `pushaway` off for all of them:
+
+```kdl
+layout {
+    layout-mode "i3"
+    // Follow windows moved to another workspace.
+    pushaway false
+}
+
+binds {
+    // Moves the window away and stays here.
+    Mod+Shift+1 { move-window-to-workspace 1; }
+    // Always follows the window, even with pushaway on.
+    Mod+Ctrl+1 { move-window-to-workspace 1 focus=true; }
+}
+```
+
+`pushaway` can only be set in the top-level `layout {}` section, and has no effect in the scrolling layout.
+
 `niri msg workspaces` and status bars show the workspace number as its index.
 
 `empty-workspace-above-first` and `positional-workspaces` have no effect in i3 mode.

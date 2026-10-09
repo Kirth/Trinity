@@ -29,7 +29,7 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for WorkspaceLayoutPart {
             // Check for disallowed properties.
             //
             // - empty-workspace-above-first and positional-workspaces are monitor-level concepts.
-            // - layout-mode can only be set globally.
+            // - layout-mode and pushaway can only be set globally.
             // - insert-hint customization could make sense for workspaces, however currently it is
             //   also handled at the monitor level (since insert hints in-between workspaces are a
             //   monitor-level concept), so for now this config option would do nothing.
@@ -38,6 +38,7 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for WorkspaceLayoutPart {
                 "empty-workspace-above-first"
                     | "positional-workspaces"
                     | "layout-mode"
+                    | "pushaway"
                     | "insert-hint"
             ) {
                 ctx.emit_error(DecodeError::unexpected(

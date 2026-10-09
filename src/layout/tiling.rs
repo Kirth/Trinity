@@ -4,12 +4,14 @@
 //! or show one child at a time (tabbed and stacked, with a tab indicator). Focus, move, split and
 //! layout commands follow i3's semantics.
 
+use std::iter::zip;
 use std::rc::Rc;
 
 use niri_config::utils::MergeWith as _;
 use niri_config::TabIndicatorPosition;
 use niri_ipc::{SizeChange, WindowLayout};
 use ordered_float::NotNan;
+use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
@@ -165,6 +167,7 @@ pub struct TilingSpace<W: LayoutElement> {
 niri_render_elements! {
     TilingSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
+        ClippedTile = CropRenderElement<TileRenderElement<R>>,
         ClosingWindow = ClosingWindowRenderElement,
         TabIndicator = TabIndicatorRenderElement,
         SolidColor = SolidColorRenderElement,
@@ -268,12 +271,34 @@ fn debug_color(layout: ContainerLayout) -> [f32; 3] {
     }
 }
 
+impl<W: LayoutElement> Leaf<W> {
+    /// Whether the window is bigger than its slot, usually because it can't get as small as its
+    /// share, and so has to be clipped to not cover its neighbours.
+    ///
+    /// Not while it's animating a resize, to keep the animation intact.
+    fn is_clipped(&self) -> bool {
+        if !self.sizing.is_normal() || self.tile.resize_animation().is_some() {
+            return false;
+        }
+        let size = self.tile.tile_size();
+        size.w > self.size.w + 0.5 || size.h > self.size.h + 0.5
+    }
+}
+
 impl<W: LayoutElement> Node<W> {
     /// Area of the node in the space, as last laid out.
     fn rect(&self) -> Rectangle<f64, Logical> {
         match self {
             Node::Container(container) => container.rect,
             Node::Leaf(leaf) => Rectangle::new(leaf.pos, leaf.size),
+        }
+    }
+
+    /// Smallest size the node can take without its windows growing past their slots.
+    fn min_size(&self, gaps: f64, scale: f64) -> Size<f64, Logical> {
+        match self {
+            Node::Container(container) => container.min_size(gaps, scale),
+            Node::Leaf(leaf) => leaf.tile.min_size_nonfullscreen(),
         }
     }
 
@@ -458,6 +483,32 @@ impl<W: LayoutElement> Container<W> {
         rect
     }
 
+    /// Smallest size the container can take: its children's mins along the split axis add up,
+    /// the largest one counts across it and in tabbed and stacked layouts.
+    fn min_size(&self, gaps: f64, scale: f64) -> Size<f64, Logical> {
+        let mins = self
+            .children
+            .iter()
+            .map(|child| child.min_size(gaps, scale));
+        let max = |a: Size<f64, Logical>, b: Size<f64, Logical>| {
+            Size::from((f64::max(a.w, b.w), f64::max(a.h, b.h)))
+        };
+        let gaps = gaps * self.children.len().saturating_sub(1) as f64;
+
+        match self.layout {
+            ContainerLayout::SplitH => mins.fold(Size::from((gaps, 0.)), |acc, min| {
+                Size::from((acc.w + min.w, f64::max(acc.h, min.h)))
+            }),
+            ContainerLayout::SplitV => mins.fold(Size::from((0., gaps)), |acc, min| {
+                Size::from((f64::max(acc.w, min.w), acc.h + min.h))
+            }),
+            ContainerLayout::Tabbed | ContainerLayout::Stacked => {
+                let extra = self.tab_indicator.extra_size(self.children.len(), scale);
+                mins.fold(Size::default(), max) + extra
+            }
+        }
+    }
+
     /// Lays out this container's children inside `self.rect`.
     fn layout_children(&mut self, ctx: &LayoutCtx, visible: bool) {
         let count = self.children.len();
@@ -475,13 +526,27 @@ impl<W: LayoutElement> Container<W> {
                 };
                 let available = f64::max(total - ctx.gaps * (count - 1) as f64, 0.);
 
+                let mins: Vec<f64> = self
+                    .children
+                    .iter()
+                    .map(|child| {
+                        let min = child.min_size(ctx.gaps, ctx.scale);
+                        if horizontal {
+                            min.w
+                        } else {
+                            min.h
+                        }
+                    })
+                    .collect();
+                let lens = split_lengths(&self.shares, &mins, available);
+
                 let mut offset = 0.;
                 for (idx, child) in self.children.iter_mut().enumerate() {
                     // The last child takes the remaining space to avoid rounding drift.
                     let len = if idx == count - 1 {
                         f64::max(total - offset, 0.)
                     } else {
-                        (available * self.shares[idx]).round()
+                        lens[idx].round()
                     };
 
                     let mut rect = self.rect;
@@ -588,6 +653,54 @@ fn layout_node<W: LayoutElement>(
                 }
                 SizingMode::Fullscreen => leaf.tile.request_fullscreen(ctx.animate, transaction),
             }
+        }
+    }
+}
+
+/// Splits `available` between children by their shares, giving each at least its min.
+///
+/// Children whose share falls below their min get the min, and the others share the rest by
+/// their shares. When the mins don't all fit, the plain shares are used: windows then get
+/// clipped to their slots.
+fn split_lengths(shares: &[f64], mins: &[f64], available: f64) -> Vec<f64> {
+    let by_shares = || shares.iter().map(|share| available * share).collect();
+    if mins.iter().sum::<f64>() > available {
+        return by_shares();
+    }
+
+    let mut pinned = vec![false; shares.len()];
+    loop {
+        let rest = available
+            - zip(mins, &pinned)
+                .filter(|(_, pinned)| **pinned)
+                .map(|(min, _)| min)
+                .sum::<f64>();
+        let rest_shares: f64 = zip(shares, &pinned)
+            .filter(|(_, pinned)| !**pinned)
+            .map(|(share, _)| share)
+            .sum();
+
+        let lens: Vec<f64> = (0..shares.len())
+            .map(|i| {
+                if pinned[i] {
+                    mins[i]
+                } else if rest_shares > 0. {
+                    rest * shares[i] / rest_shares
+                } else {
+                    0.
+                }
+            })
+            .collect();
+
+        let mut changed = false;
+        for i in 0..shares.len() {
+            if !pinned[i] && lens[i] < mins[i] {
+                pinned[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return lens;
         }
     }
 }
@@ -1253,7 +1366,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
         let available = f64::max(total - gaps * (count - 1) as f64, 1.);
 
-        let current = parent.shares[idx] * available;
+        // Start from the laid out size, which can be above the share for a window at its min.
+        let rect = parent.children[idx].rect();
+        let current = match orientation {
+            Orientation::Horizontal => rect.size.w,
+            Orientation::Vertical => rect.size.h,
+        };
         let target = match change {
             SizeChange::SetFixed(px) => f64::from(px),
             SizeChange::SetProportion(prop) => working * prop / 100.,
@@ -1858,10 +1976,20 @@ impl<W: LayoutElement> TilingSpace<W> {
 
             let focus_ring = focus_ring && Some(leaf.tile.window().id()) == focused_id.as_ref();
             let xray_pos = xray_pos.offset(tile_pos);
-            leaf.tile
-                .render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
-                    push(elem.into())
-                });
+            if leaf.is_clipped() {
+                let crop = Rectangle::new(tile_pos, leaf.size).to_physical_precise_round(scale);
+                leaf.tile
+                    .render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                        if let Some(elem) = CropRenderElement::from_element(elem, scale, crop) {
+                            push(elem.into());
+                        }
+                    });
+            } else {
+                leaf.tile
+                    .render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
+                        push(elem.into())
+                    });
+            }
         }
     }
 
@@ -1894,6 +2022,10 @@ impl<W: LayoutElement> TilingSpace<W> {
         for leaf in leaves {
             let tile_pos = leaf.pos + leaf.tile.render_offset();
             let tile_pos = tile_pos.to_physical_precise_round(scale).to_logical(scale);
+            // The clipped off part of a window doesn't take input.
+            if leaf.is_clipped() && !Rectangle::new(tile_pos, leaf.size).contains(pos) {
+                continue;
+            }
             if let Some(rv) = HitType::hit_tile(&leaf.tile, tile_pos, pos) {
                 return Some(rv);
             }
@@ -2361,4 +2493,35 @@ fn compute_toplevel_bounds(
         f64::max(working_area_size.h - gaps * 2. - border, 1.),
     ))
     .to_i32_floor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_lengths_follow_shares_without_mins() {
+        assert_eq!(split_lengths(&[0.5, 0.5], &[0., 0.], 100.), [50., 50.]);
+    }
+
+    #[test]
+    fn split_lengths_give_mins_and_share_the_rest() {
+        let lens = split_lengths(&[0.25, 0.25, 0.5], &[60., 0., 0.], 100.);
+        // 40 left for the others, in a 1:2 ratio.
+        assert_eq!(lens[0], 60.);
+        assert!((lens[1] - 40. / 3.).abs() < 1e-9);
+        assert!((lens[2] - 80. / 3.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn split_lengths_pin_mins_that_appear_after_others() {
+        // After pinning the first child, the second one falls below its min too.
+        let lens = split_lengths(&[0.2, 0.3, 0.5], &[50., 25., 0.], 100.);
+        assert_eq!(lens, [50., 25., 25.]);
+    }
+
+    #[test]
+    fn split_lengths_fall_back_to_shares_when_mins_dont_fit() {
+        assert_eq!(split_lengths(&[0.5, 0.5], &[80., 80.], 100.), [50., 50.]);
+    }
 }

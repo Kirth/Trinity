@@ -230,9 +230,9 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
         .iter()
         .any(|bind| matches!(bind.action, Action::MoveWindowToWorkspaceDown(_)))
     {
-        actions.push(&Action::MoveWindowToWorkspaceDown(true));
+        actions.push(&Action::MoveWindowToWorkspaceDown(None));
     } else {
-        actions.push(&Action::MoveColumnToWorkspaceDown(true));
+        actions.push(&Action::MoveColumnToWorkspaceDown(None));
     }
 
     // Same for -up.
@@ -245,9 +245,9 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
         .iter()
         .any(|bind| matches!(bind.action, Action::MoveWindowToWorkspaceUp(_)))
     {
-        actions.push(&Action::MoveWindowToWorkspaceUp(true));
+        actions.push(&Action::MoveWindowToWorkspaceUp(None));
     } else {
-        actions.push(&Action::MoveColumnToWorkspaceUp(true));
+        actions.push(&Action::MoveColumnToWorkspaceUp(None));
     }
 
     actions.extend(&[

@@ -732,6 +732,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_pushaway() {
+        assert!(do_parse("").layout.pushaway);
+        assert!(!do_parse("layout { pushaway false; }").layout.pushaway);
+        assert!(Config::parse_mem(r#"output "DP-1" { layout { pushaway false; } }"#).is_err());
+        assert!(Config::parse_mem(r#"workspace "a" { layout { pushaway false; } }"#).is_err());
+
+        // focus is optional on move actions: unset means "go by pushaway".
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+1 { move-window-to-workspace 1; }
+                Mod+2 { move-window-to-workspace 2 focus=true; }
+            }
+            "#,
+        );
+        assert_eq!(
+            parsed.binds.0[0].action,
+            Action::MoveWindowToWorkspace(WorkspaceReference::Index(1), None)
+        );
+        assert_eq!(
+            parsed.binds.0[1].action,
+            Action::MoveWindowToWorkspace(WorkspaceReference::Index(2), Some(true))
+        );
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"
@@ -1571,6 +1597,7 @@ mod tests {
                 empty_workspace_above_first: false,
                 positional_workspaces: false,
                 layout_mode: Scrolling,
+                pushaway: true,
                 default_column_display: Tabbed,
                 gaps: 8.0,
                 struts: Struts {

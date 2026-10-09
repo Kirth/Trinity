@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use niri_ipc::SizeChange;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Size};
 
 use super::*;
 use crate::layout::tiling::{ContainerLayout, LayoutCommand, SplitCommand};
@@ -581,4 +581,88 @@ fn debug_dividers_between_children() {
     );
     assert_eq!(debug_outline_edges(&mut layout), 4);
     assert_eq!(debug_labels(&layout), [ContainerLayout::Tabbed]);
+}
+
+fn add_window_with_min(id: usize, w: i32, h: i32) -> Op {
+    let mut params = TestWindowParams::new(id);
+    params.min_max_size = (Size::from((w, h)), Size::default());
+    Op::AddWindow { params }
+}
+
+#[test]
+fn min_width_takes_space_from_siblings() {
+    let layout = tiling_layout([add_window_with_min(1, 900, 0), add_window(2), add_window(3)]);
+    let pos = positions(&layout);
+    // Window 1 gets its min width, and the other two share the rest.
+    assert!(pos[&2].0.x >= pos[&1].0.x + 900., "{pos:?}");
+    assert!(pos[&3].0.x > pos[&2].0.x, "{pos:?}");
+}
+
+#[test]
+fn min_width_inside_nested_container() {
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        Op::Split(SplitCommand::Vertical),
+        add_window_with_min(3, 900, 0),
+    ]);
+    let pos = positions(&layout);
+    // 2 and 3 are stacked in the right column, which is as wide as 3 needs.
+    assert_eq!(pos[&2].0.x, pos[&3].0.x);
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.view_size().w - pos[&3].0.x >= 900., "{pos:?}");
+}
+
+#[test]
+fn mins_that_dont_fit_fall_back_to_shares() {
+    let layout = tiling_layout([
+        add_window_with_min(1, 900, 0),
+        add_window_with_min(2, 900, 0),
+    ]);
+    let pos = positions(&layout);
+    let ws = layout.active_workspace().unwrap();
+    let half = ws.view_size().w / 2.;
+    assert!((pos[&2].0.x - half).abs() < 16., "{pos:?}");
+}
+
+#[test]
+fn window_larger_than_slot_is_clipped_for_input() {
+    let mut layout = tiling_layout([
+        add_window_with_min(1, 900, 0),
+        add_window_with_min(2, 900, 0),
+        // Window 1 refuses its slot and stays 900 wide, over window 2's slot.
+        Op::SetForcedSize {
+            id: 1,
+            size: Some(Size::from((900, 200))),
+        },
+        Op::Communicate(1),
+    ]);
+    let pos = positions(&layout);
+    let x = pos[&2].0.x + 10.;
+    let output = layout.active_output().unwrap().clone();
+    layout.refresh(true);
+
+    // The part of window 1 over window 2's slot is clipped: clicks there go to window 2.
+    let (win, _) = layout
+        .window_under(&output, Point::from((x, 100.)))
+        .unwrap();
+    assert_eq!(*win.id(), 2);
+}
+
+#[test]
+fn resize_grows_window_at_its_min() {
+    let before = tiling_layout([add_window_with_min(1, 900, 0), add_window(2), add_window(3)]);
+    let x_before = positions(&before)[&2].0.x;
+
+    let layout = tiling_layout([
+        add_window_with_min(1, 900, 0),
+        add_window(2),
+        add_window(3),
+        Op::FocusColumnLeft,
+        Op::FocusColumnLeft,
+        Op::SetColumnWidth(SizeChange::AdjustProportion(5.)),
+    ]);
+    assert_eq!(focused(&layout), 1);
+    let x_after = positions(&layout)[&2].0.x;
+    assert!(x_after > x_before + 30., "{x_before} -> {x_after}");
 }
