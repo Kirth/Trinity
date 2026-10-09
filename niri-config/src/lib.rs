@@ -720,6 +720,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_resize_mode() {
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+R { resize-mode; }
+            }
+            "#,
+        );
+        assert_eq!(parsed.binds.0[0].action, Action::ResizeMode);
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"

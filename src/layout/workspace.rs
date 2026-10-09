@@ -2012,6 +2012,14 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Area that resize mode acts on: the focused i3 container or the active window.
+    pub fn resize_target_rect(&self) -> Option<Rectangle<f64, Logical>> {
+        match &self.tiling {
+            Some(tiling) if !self.floating_is_active.get() => tiling.focused_node_rect(),
+            _ => self.active_window_visual_rectangle(),
+        }
+    }
+
     pub fn popup_target_rect(&self, window: &W::Id) -> Option<Rectangle<f64, Logical>> {
         if self.floating.has_window(window) {
             self.floating.popup_target_rect(window)

@@ -52,6 +52,7 @@ use crate::layout::tiling::{ContainerLayout as TilingLayout, LayoutCommand, Spli
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
+use crate::ui::resize_mode::resize_bind;
 use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
 use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
@@ -553,6 +554,42 @@ impl State {
                     // Don't send this press to any clients.
                     this.niri.suppressed_keys.insert(key_code);
                     return FilterResult::Intercept(None);
+                }
+
+                // In resize mode, keys resize the focused window, and anything else is swallowed.
+                if this.niri.resize_mode.is_active()
+                    && this.niri.keyboard_focus.is_layout()
+                    && pressed
+                {
+                    this.niri.suppressed_keys.insert(key_code);
+
+                    let bind = {
+                        let config = this.niri.config.borrow();
+                        find_bind(
+                            config.binds.0.iter(),
+                            mod_key,
+                            modified,
+                            raw,
+                            *mods,
+                            config.input.disable_power_key_handling,
+                        )
+                    };
+                    let action = bind.as_ref().map(|bind| &bind.action);
+
+                    // Switching VTs must always work.
+                    if matches!(action, Some(Action::ChangeVt(_))) {
+                        return FilterResult::Intercept(bind);
+                    }
+
+                    if action == Some(&Action::ResizeMode)
+                        || matches!(raw, Some(Keysym::Escape | Keysym::Return))
+                    {
+                        this.niri.resize_mode.close();
+                        this.niri.queue_redraw_all();
+                        return FilterResult::Intercept(None);
+                    }
+
+                    return FilterResult::Intercept(raw.and_then(resize_bind));
                 }
 
                 // Check if all modifiers were released while the MRU UI was open. If so, close the
@@ -1691,6 +1728,10 @@ impl State {
             }
             Action::FocusWindowWithHints => {
                 self.open_ace_hints();
+            }
+            Action::ResizeMode => {
+                self.niri.resize_mode.toggle();
+                self.niri.queue_redraw_all();
             }
             Action::ToggleDebugI3Containers => {
                 let config = self.niri.config.clone();

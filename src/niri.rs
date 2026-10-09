@@ -179,6 +179,7 @@ use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
+use crate::ui::resize_mode::ResizeMode;
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
@@ -411,6 +412,7 @@ pub struct Niri {
     pub hotkey_overlay: HotkeyOverlay,
     pub exit_confirm_dialog: ExitConfirmDialog,
     pub ace_hints: AceHints,
+    pub resize_mode: ResizeMode,
 
     pub window_mru_ui: WindowMruUi,
     pub pending_mru_commit: Option<PendingMruCommit>,
@@ -1448,6 +1450,11 @@ impl State {
         } else {
             KeyboardFocus::Layout { surface: None }
         };
+
+        // Resize mode only works on the layout: leave it when anything else takes the keyboard.
+        if !focus.is_layout() && self.niri.resize_mode.close() {
+            self.niri.queue_redraw_all();
+        }
 
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         if self.niri.keyboard_focus != focus {
@@ -2830,6 +2837,7 @@ impl Niri {
             hotkey_overlay,
             exit_confirm_dialog,
             ace_hints: AceHints::new(),
+            resize_mode: ResizeMode::new(),
 
             window_mru_ui,
             pending_mru_commit: None,
@@ -4550,6 +4558,15 @@ impl Niri {
                 .render(ctx.renderer, scale, windows.into_iter(), &mut |elem| {
                     push(elem.into())
                 });
+        }
+
+        // Then, the resize mode label.
+        if self.resize_mode.is_active() {
+            if let Some(rect) = self.resize_mode_target(output) {
+                let scale = output.current_scale().fractional_scale();
+                self.resize_mode
+                    .render(ctx.renderer, scale, rect, &mut |elem| push(elem.into()));
+            }
         }
 
         // Then, the Alt-Tab switcher.
@@ -6560,6 +6577,20 @@ impl Niri {
             }
         }
         rv
+    }
+
+    /// Area that resize mode acts on, if it's on this output, in output-local coordinates.
+    pub fn resize_mode_target(&self, output: &Output) -> Option<Rectangle<f64, Logical>> {
+        if self.layout.active_output() != Some(output) {
+            return None;
+        }
+        let mon = self.layout.monitor_for_output(output)?;
+        let active = mon.active_workspace_ref();
+        let (ws, ws_geo) = mon
+            .workspaces_with_render_geo()
+            .find(|(ws, _)| ws.id() == active.id())?;
+        let rect = ws.resize_target_rect()?;
+        Some(Rectangle::new(ws_geo.loc + rect.loc, rect.size))
     }
 
     pub fn is_locked(&self) -> bool {

@@ -116,11 +116,38 @@ binds {
     Mod+E { layout "toggle-split"; }
     Mod+F { fullscreen-window; }
     Mod+A { focus-parent; }
+    Mod+R { resize-mode; }
 
     Mod+Shift+Space { toggle-window-floating; }
     Mod+Space { switch-focus-between-floating-and-tiling; }
 }
 ```
+
+### Resize mode
+
+`resize-mode` resizes the focused window, or the focused container after `focus-parent`, with plain keys, like i3's `mode "resize"`.
+A "resize" label shows on what's being resized.
+
+```kdl
+binds {
+    Mod+R { resize-mode; }
+}
+```
+
+| Key | Action |
+| --- | --- |
+| <kbd>Left</kbd> or <kbd>h</kbd> | shrink the width by 10% of the screen |
+| <kbd>Right</kbd> or <kbd>l</kbd> | grow the width |
+| <kbd>Up</kbd> or <kbd>k</kbd> | shrink the height |
+| <kbd>Down</kbd> or <kbd>j</kbd> | grow the height |
+| <kbd>Escape</kbd>, <kbd>Return</kbd> or the `resize-mode` bind | leave resize mode |
+
+Holding a key keeps resizing, and modifiers don't matter.
+Other keys do nothing while in resize mode.
+Locking the screen or opening the overview, screenshot UI or window switcher leaves it.
+
+Like in i3, growing a window takes the space from the other windows in its container.
+Resize mode also works for floating windows and in the scrolling layout.
 
 ### Jumping to windows
 

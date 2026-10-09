@@ -221,3 +221,111 @@ fn hints_focus_typed_window() {
     f.double_roundtrip(id);
     assert_eq!(focused_id(&mut f), Some(ids[0]));
 }
+
+/// Commits the last configured size of each window, and returns their widths.
+fn configured_widths(f: &mut Fixture, id: ClientId, surfaces: &[&WlSurface]) -> Vec<i32> {
+    let widths = surfaces
+        .iter()
+        .map(|surface| {
+            let window = f.client(id).window(surface);
+            let (w, h) = window.configures_received.last().unwrap().1.size;
+            if window.configures_looked_at < window.configures_received.len() {
+                window.configures_looked_at = window.configures_received.len();
+                window.set_size(w as u16, h as u16);
+                window.ack_last_and_commit();
+            }
+            w
+        })
+        .collect();
+    f.double_roundtrip(id);
+    widths
+}
+
+#[test]
+fn resize_mode_resizes_until_escape() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // Two windows side by side, the second one focused.
+    let first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    assert_eq!(
+        configured_widths(&mut f, id, &[&first, &second]),
+        [936, 936]
+    );
+
+    f.niri_state()
+        .do_action(niri_config::Action::ResizeMode, false);
+    assert!(f.niri().resize_mode.is_active());
+
+    // Right grows the focused window, taking the space from its neighbour.
+    tap_key(&mut f, "RGHT");
+    f.double_roundtrip(id);
+    let [w1, w2] = configured_widths(&mut f, id, &[&first, &second])[..] else {
+        unreachable!()
+    };
+    assert!(w2 > 936, "{w2}");
+    assert_eq!(w1 + w2, 936 * 2);
+
+    // l does the same.
+    tap_key(&mut f, "AC09");
+    f.double_roundtrip(id);
+    let grown = configured_widths(&mut f, id, &[&first, &second]);
+    assert!(grown[1] > w2, "{grown:?}");
+
+    // h shrinks it back.
+    tap_key(&mut f, "AC06");
+    f.double_roundtrip(id);
+    assert_eq!(configured_widths(&mut f, id, &[&first, &second]), [w1, w2]);
+
+    // Other keys are swallowed and keep the mode.
+    let _ = f.client(id).state.recent_keyboard_events(&second).count();
+    tap_key(&mut f, "AD01"); // q
+    f.double_roundtrip(id);
+    assert!(f.niri().resize_mode.is_active());
+    let key_events = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&second)
+        .filter(|event| matches!(event, client::KeyboardEvent::Key { .. }))
+        .count();
+    assert_eq!(key_events, 0);
+    assert_eq!(configured_widths(&mut f, id, &[&first, &second]), [w1, w2]);
+
+    // Escape leaves, and then arrows no longer resize.
+    tap_key(&mut f, "ESC");
+    assert!(!f.niri().resize_mode.is_active());
+    tap_key(&mut f, "RGHT");
+    f.double_roundtrip(id);
+    assert_eq!(configured_widths(&mut f, id, &[&first, &second]), [w1, w2]);
+
+    // Return leaves too.
+    f.niri_state()
+        .do_action(niri_config::Action::ResizeMode, false);
+    tap_key(&mut f, "RTRN");
+    assert!(!f.niri().resize_mode.is_active());
+}
+
+#[test]
+fn resize_mode_bind_toggles() {
+    let config = Config::parse_mem(
+        r#"
+        layout { layout-mode "i3"; }
+        binds {
+            R { resize-mode; }
+        }
+        "#,
+    )
+    .unwrap();
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+
+    tap_key(&mut f, "AD04"); // r
+    assert!(f.niri().resize_mode.is_active());
+    tap_key(&mut f, "AD04");
+    assert!(!f.niri().resize_mode.is_active());
+}

@@ -474,6 +474,8 @@ pub enum Action {
     ToggleDebugI3Containers {},
     /// Show a hint on every visible window, then focus the window whose hint is typed.
     FocusWindowWithHints {},
+    /// Enter resize mode: arrows and h/j/k/l resize the focused window, Escape or Return leave.
+    ResizeMode {},
     /// Center the focused column on the screen.
     CenterColumn {},
     /// Center a window on the screen.

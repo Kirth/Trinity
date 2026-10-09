@@ -1560,6 +1560,15 @@ impl<W: LayoutElement> TilingSpace<W> {
         area.intersection(window_rect)
     }
 
+    /// Area of the focused node: the container after `focus-parent`, otherwise the window.
+    pub fn focused_node_rect(&self) -> Option<Rectangle<f64, Logical>> {
+        let path = self.focused_path()?;
+        match self.root.node_at(&path) {
+            Node::Container(container) => Some(container.rect),
+            Node::Leaf(_) => self.active_window_visual_rectangle(),
+        }
+    }
+
     pub fn popup_target_rect(&self, id: &W::Id) -> Option<Rectangle<f64, Logical>> {
         let leaf = self
             .root
