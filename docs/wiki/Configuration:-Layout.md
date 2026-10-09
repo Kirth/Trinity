@@ -6,6 +6,7 @@ Here are the contents of this section at a glance:
 
 ```kdl
 layout {
+    layout-mode "scrolling"
     gaps 16
     center-focused-column "never"
     always-center-single-column
@@ -155,6 +156,21 @@ layout {
 }
 ```
 
+### `layout-mode`
+
+<sup>Since: next release</sup>
+
+How windows and workspaces are laid out: `"scrolling"` (the default) for niri's scrollable columns, or `"i3"` for an i3-style tree of containers with numbered workspaces.
+See [i3 mode](./Configuration:-i3-Mode.md) for how it works.
+
+This setting can only be used in the top-level `layout {}` section, not for individual outputs or workspaces.
+
+```kdl
+layout {
+    layout-mode "i3"
+}
+```
+
 ### `positional-workspaces`
 
 <sup>Since: next release</sup>
@@ -167,6 +183,8 @@ So if you put a window on workspace 7, it stays at 7 even when workspaces 3–6 
 Once no workspace below them has windows anymore, the empty workspaces at the end are removed as usual.
 
 The empty workspaces in between are not kept when the monitor is disconnected.
+
+This has no effect in [i3 mode](./Configuration:-i3-Mode.md), where workspaces are numbered anyway.
 
 ```kdl
 layout {

@@ -96,7 +96,7 @@ pub fn refresh(state: &mut State) {
 
     // Remove workspaces that no longer exist (sending workspace_leave to workspace groups).
     let mut seen_workspaces = HashMap::new();
-    for (mon, _, ws) in state.niri.layout.workspaces() {
+    for (mon, _, _, ws) in state.niri.layout.visible_workspaces() {
         let output = mon.map(|mon| mon.output());
         seen_workspaces.insert(ws.id(), output);
     }
@@ -138,8 +138,8 @@ pub fn refresh(state: &mut State) {
     });
 
     // Update existing workspaces and create new ones.
-    for (mon, ws_idx, ws) in state.niri.layout.workspaces() {
-        changed |= refresh_workspace(protocol_state, mon, ws_idx, ws);
+    for (mon, ws_idx, number, ws) in state.niri.layout.visible_workspaces() {
+        changed |= refresh_workspace(protocol_state, mon, ws_idx, number, ws);
     }
 
     // Update workspace groups and create new ones, sending workspace_enter events as needed.
@@ -256,17 +256,16 @@ fn remove_workspace_instances(
     }
 }
 
-fn build_name(ws: &Workspace<Mapped>, ws_idx: usize) -> String {
-    ws.name().cloned().unwrap_or_else(|| {
-        // Add 1 since this is a human-readable name, and our action indexing is 1-based.
-        (ws_idx + 1).to_string()
-    })
+/// Builds the workspace name, using its 1-based number (position or i3 number) if unnamed.
+fn build_name(ws: &Workspace<Mapped>, number: u8) -> String {
+    ws.name().cloned().unwrap_or_else(|| number.to_string())
 }
 
 fn refresh_workspace(
     protocol_state: &mut ExtWorkspaceManagerState,
     mon: Option<&Monitor<Mapped>>,
     ws_idx: usize,
+    number: u8,
     ws: &Workspace<Mapped>,
 ) -> bool {
     let mut state = ext_workspace_handle_v1::State::empty();
@@ -308,18 +307,19 @@ fn refresh_workspace(
                 state_changed = true;
             }
 
-            // Recreate means name got changed or unset (meaning data.name is back to ws_idx).
+            // Recreate means name got changed or unset (meaning data.name is back to the number).
             let check = recreate
                 || if data.id.is_some() {
-                    // True means workspace got named, going from ws_idx to name.
+                    // True means workspace got named, going from the number to name.
                     id_set
                 } else {
-                    // The workspace is unnamed, check if ws_idx changed.
-                    coordinates_changed
+                    // The workspace is unnamed, check if its number changed. In i3 mode, the
+                    // number can change without the position changing.
+                    coordinates_changed || data.name != number.to_string()
                 };
             let mut name_changed = false;
             if check {
-                let new_name = build_name(ws, ws_idx);
+                let new_name = build_name(ws, number);
                 // This will likely be true, except if the workspace got named its index.
                 if data.name != new_name {
                     data.name = new_name;
@@ -384,7 +384,7 @@ fn refresh_workspace(
             // New workspace, start tracking it.
             let mut data = ExtWorkspaceData {
                 id: ws.name().cloned(),
-                name: build_name(ws, ws_idx),
+                name: build_name(ws, number),
                 coordinates: ArrayVec::from([0, ws_idx as u32]),
                 state,
                 instances: Vec::new(),

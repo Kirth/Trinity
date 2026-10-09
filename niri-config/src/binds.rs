@@ -7,7 +7,8 @@ use bitflags::bitflags;
 use knuffel::errors::DecodeError;
 use miette::miette;
 use niri_ipc::{
-    ColumnDisplay, LayoutSwitchTarget, PositionChange, SizeChange, WorkspaceReferenceArg,
+    ColumnDisplay, ContainerLayout, LayoutSwitchTarget, PositionChange, SizeChange, SplitDirection,
+    WorkspaceReferenceArg,
 };
 use smithay::input::keyboard::keysyms::KEY_NoSymbol;
 use smithay::input::keyboard::xkb::{keysym_from_name, KEYSYM_CASE_INSENSITIVE, KEYSYM_NO_FLAGS};
@@ -211,6 +212,10 @@ pub enum Action {
     SwapWindowRight,
     ToggleColumnTabbedDisplay,
     SetColumnDisplay(#[knuffel(argument, str)] ColumnDisplay),
+    Split(#[knuffel(argument, str)] SplitDirection),
+    Layout(#[knuffel(argument, str)] ContainerLayout),
+    FocusParent,
+    FocusChild,
     CenterColumn,
     CenterWindow,
     #[knuffel(skip)]
@@ -507,6 +512,10 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::SwapWindowLeft {} => Self::SwapWindowLeft,
             niri_ipc::Action::ToggleColumnTabbedDisplay {} => Self::ToggleColumnTabbedDisplay,
             niri_ipc::Action::SetColumnDisplay { display } => Self::SetColumnDisplay(display),
+            niri_ipc::Action::Split { direction } => Self::Split(direction),
+            niri_ipc::Action::Layout { layout } => Self::Layout(layout),
+            niri_ipc::Action::FocusParent {} => Self::FocusParent,
+            niri_ipc::Action::FocusChild {} => Self::FocusChild,
             niri_ipc::Action::CenterColumn {} => Self::CenterColumn,
             niri_ipc::Action::CenterWindow { id: None } => Self::CenterWindow,
             niri_ipc::Action::CenterWindow { id: Some(id) } => Self::CenterWindowById(id),

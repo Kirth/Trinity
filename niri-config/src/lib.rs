@@ -54,7 +54,7 @@ pub use crate::input::{Input, ModKey, ScrollMethod, TrackLayout, WarpMouseToFocu
 pub use crate::layer_rule::LayerRule;
 pub use crate::layout::*;
 pub use crate::misc::*;
-pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
+pub use crate::output::{Output, OutputLayoutPart, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::utils::FloatOrInt;
@@ -645,6 +645,50 @@ mod tests {
         Config::parse_mem(text)
             .map_err(miette::Report::new)
             .unwrap()
+    }
+
+    #[test]
+    fn parse_layout_mode() {
+        let parsed = do_parse(r#"layout { layout-mode "i3"; }"#);
+        assert_eq!(parsed.layout.layout_mode, LayoutMode::I3);
+
+        let parsed = do_parse("");
+        assert_eq!(parsed.layout.layout_mode, LayoutMode::Scrolling);
+
+        // layout-mode can only be set globally.
+        assert!(Config::parse_mem(r#"output "DP-1" { layout { layout-mode "i3"; } }"#).is_err());
+        assert!(Config::parse_mem(r#"workspace "a" { layout { layout-mode "i3"; } }"#).is_err());
+    }
+
+    #[test]
+    fn parse_i3_actions() {
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+V { split "vertical"; }
+                Mod+B { split "toggle"; }
+                Mod+W { layout "tabbed"; }
+                Mod+E { layout "toggle-split"; }
+                Mod+A { focus-parent; }
+                Mod+D { focus-child; }
+            }
+            "#,
+        );
+
+        let actions: Vec<_> = parsed.binds.0.iter().map(|bind| &bind.action).collect();
+        assert_eq!(
+            actions,
+            [
+                &Action::Split(niri_ipc::SplitDirection::Vertical),
+                &Action::Split(niri_ipc::SplitDirection::Toggle),
+                &Action::Layout(niri_ipc::ContainerLayout::Tabbed),
+                &Action::Layout(niri_ipc::ContainerLayout::ToggleSplit),
+                &Action::FocusParent,
+                &Action::FocusChild,
+            ]
+        );
+
+        assert!(Config::parse_mem(r#"binds { Mod+V { split "diagonal"; } }"#).is_err());
     }
 
     #[test]
@@ -1486,6 +1530,7 @@ mod tests {
                 always_center_single_column: false,
                 empty_workspace_above_first: false,
                 positional_workspaces: false,
+                layout_mode: Scrolling,
                 default_column_display: Tabbed,
                 gaps: 8.0,
                 struts: Struts {

@@ -30,6 +30,7 @@
 * [Switch Events](./Configuration:-Switch-Events.md)
 * [Layout](./Configuration:-Layout.md)
 * [Named Workspaces](./Configuration:-Named-Workspaces.md)
+* [i3 Mode](./Configuration:-i3-Mode.md)
 * [Miscellaneous](./Configuration:-Miscellaneous.md)
 * [Window Rules](./Configuration:-Window-Rules.md)
 * [Layer Rules](./Configuration:-Layer-Rules.md)

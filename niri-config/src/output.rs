@@ -77,7 +77,32 @@ pub struct Output {
     #[knuffel(child)]
     pub hot_corners: Option<HotCorners>,
     #[knuffel(child)]
-    pub layout: Option<LayoutPart>,
+    pub layout: Option<OutputLayoutPart>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputLayoutPart(pub LayoutPart);
+
+impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for OutputLayoutPart {
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        for child in node.children() {
+            let name = &**child.node_name;
+
+            // layout-mode can only be set globally.
+            if name == "layout-mode" {
+                ctx.emit_error(DecodeError::unexpected(
+                    child,
+                    "node",
+                    format!("node `{name}` is not allowed inside `output.layout`"),
+                ));
+            }
+        }
+
+        LayoutPart::decode_node(node, ctx).map(Self)
+    }
 }
 
 impl Output {

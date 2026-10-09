@@ -604,7 +604,7 @@ impl State {
         // Check for workspace changes.
         let mut seen = HashSet::new();
         let mut need_workspaces_changed = false;
-        for (mon, ws_idx, ws) in layout.workspaces() {
+        for (mon, ws_idx, number, ws) in layout.visible_workspaces() {
             let id = ws.id().get();
             seen.insert(id);
 
@@ -616,7 +616,7 @@ impl State {
 
             // Check for any changes that we can't signal as individual events.
             let output_name = mon.map(|mon| mon.output_name());
-            if ipc_ws.idx != u8::try_from(ws_idx + 1).unwrap_or(u8::MAX)
+            if ipc_ws.idx != number
                 || ipc_ws.name.as_ref() != ws.name()
                 || ipc_ws.output.as_ref() != output_name
             {
@@ -661,12 +661,12 @@ impl State {
             events.clear();
 
             let workspaces = layout
-                .workspaces()
-                .map(|(mon, ws_idx, ws)| {
+                .visible_workspaces()
+                .map(|(mon, ws_idx, number, ws)| {
                     let id = ws.id().get();
                     Workspace {
                         id,
-                        idx: u8::try_from(ws_idx + 1).unwrap_or(u8::MAX),
+                        idx: number,
                         name: ws.name().cloned(),
                         output: mon.map(|mon| mon.output_name().clone()),
                         is_urgent: ws.is_urgent(),

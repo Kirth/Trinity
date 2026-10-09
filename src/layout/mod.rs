@@ -85,6 +85,7 @@ pub mod scrolling;
 pub mod shadow;
 pub mod tab_indicator;
 pub mod tile;
+pub mod tiling;
 pub mod workspace;
 
 #[cfg(test)]
@@ -673,13 +674,27 @@ impl Options {
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
         }
+        .with_i3_overrides()
     }
 
     fn with_merged_layout(mut self, part: Option<&niri_config::LayoutPart>) -> Self {
         if let Some(part) = part {
             self.layout.merge_with(part);
         }
+        self.with_i3_overrides()
+    }
+
+    /// Turns off the workspace options that don't apply in i3 mode.
+    fn with_i3_overrides(mut self) -> Self {
+        if self.is_i3() {
+            self.layout.empty_workspace_above_first = false;
+            self.layout.positional_workspaces = false;
+        }
         self
+    }
+
+    pub fn is_i3(&self) -> bool {
+        self.layout.layout_mode == niri_config::LayoutMode::I3
     }
 
     fn adjusted_for_scale(mut self, scale: f64) -> Self {
@@ -728,7 +743,7 @@ impl<W: LayoutElement> Layout<W> {
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
-            options: Rc::new(options),
+            options: Rc::new(options.with_i3_overrides()),
         }
     }
 
@@ -1326,6 +1341,112 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         None
+    }
+
+    pub fn is_i3(&self) -> bool {
+        self.options.is_i3()
+    }
+
+    /// Finds the workspace with this number in i3 mode.
+    ///
+    /// Returns the output that has the workspace and its index there.
+    pub fn find_i3_workspace(&self, number: u8) -> Option<(Option<Output>, usize)> {
+        match &self.monitor_set {
+            MonitorSet::Normal { monitors, .. } => monitors.iter().find_map(|mon| {
+                let idx = mon
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.number == Some(number))?;
+                Some((Some(mon.output.clone()), idx))
+            }),
+            MonitorSet::NoOutputs { workspaces } => workspaces
+                .iter()
+                .position(|ws| ws.number == Some(number))
+                .map(|idx| (None, idx)),
+        }
+    }
+
+    /// Finds the workspace with this number in i3 mode, creating it on the active monitor if
+    /// needed.
+    ///
+    /// If the created workspace ends up unused, [`Self::clean_up_i3_workspaces`] removes it.
+    pub fn find_or_create_i3_workspace(&mut self, number: u8) -> Option<(Option<Output>, usize)> {
+        if !self.options.is_i3() {
+            return None;
+        }
+
+        if let Some(res) = self.find_i3_workspace(number) {
+            return Some(res);
+        }
+
+        let MonitorSet::Normal {
+            monitors,
+            active_monitor_idx,
+            ..
+        } = &mut self.monitor_set
+        else {
+            return None;
+        };
+
+        let mon = &mut monitors[*active_monitor_idx];
+        let idx = mon.add_i3_workspace(number);
+        Some((Some(mon.output.clone()), idx))
+    }
+
+    /// Removes the empty workspaces that an i3 workspace lookup created but nothing used.
+    pub fn clean_up_i3_workspaces(&mut self) {
+        if !self.options.is_i3() {
+            return;
+        }
+
+        if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+            for mon in monitors {
+                if mon.workspace_switch.is_none() {
+                    mon.clean_up_workspaces();
+                }
+            }
+        }
+    }
+
+    /// Gives a number to every workspace that needs one in i3 mode: non-empty and focused
+    /// workspaces. Numbers are unique across monitors, and new ones are the lowest free number.
+    fn assign_i3_numbers(&mut self) {
+        if !self.options.is_i3() {
+            return;
+        }
+
+        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+            return;
+        };
+
+        let mut used = [false; 256];
+        for mon in monitors.iter() {
+            for ws in &mon.workspaces {
+                if let Some(number) = ws.number {
+                    used[usize::from(number)] = true;
+                }
+            }
+        }
+
+        for mon in monitors.iter_mut() {
+            let active_idx = mon.active_workspace_idx;
+            for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                if ws.number.is_some()
+                    || ws.name.is_some()
+                    || !(ws.has_windows() || idx == active_idx)
+                {
+                    continue;
+                }
+
+                // Numbers start at 1, like the workspace keybinds.
+                if let Some(number) = (1..=u8::MAX).find(|&n| !used[usize::from(n)]) {
+                    used[usize::from(number)] = true;
+                    ws.number = Some(number);
+                }
+            }
+
+            mon.sort_i3_workspaces();
+        }
     }
 
     pub fn find_workspace_by_name(&self, workspace_name: &str) -> Option<(usize, &Workspace<W>)> {
@@ -2295,6 +2416,38 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_column_tabbed_display();
     }
 
+    /// i3's `split` command, only does something in i3 mode.
+    pub fn split(&mut self, command: tiling::SplitCommand) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.split(command);
+    }
+
+    /// i3's `layout` command, only does something in i3 mode.
+    pub fn set_container_layout(&mut self, command: tiling::LayoutCommand) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.set_container_layout(command);
+    }
+
+    /// i3's `focus parent`, only does something in i3 mode.
+    pub fn focus_parent(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.focus_parent();
+    }
+
+    /// i3's `focus child`, only does something in i3 mode.
+    pub fn focus_child(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.focus_child();
+    }
+
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
@@ -2437,6 +2590,17 @@ impl<W: LayoutElement> Layout<W> {
         use approx::assert_abs_diff_eq;
 
         let zoom = self.overview_zoom();
+
+        // i3 workspace numbers are unique across monitors.
+        let mut seen_numbers = HashSet::new();
+        for (_, _, ws) in self.workspaces() {
+            if let Some(number) = ws.number {
+                assert!(
+                    seen_numbers.insert(number),
+                    "i3 workspace number {number} must be unique"
+                );
+            }
+        }
 
         let mut move_win_id = None;
         if let Some(state) = &self.interactive_move {
@@ -3003,7 +3167,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     fn update_options(&mut self, options: Options) {
-        let options = Rc::new(options);
+        let options = Rc::new(options.with_i3_overrides());
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             let view_size = output_size(&move_.output);
@@ -3024,6 +3188,11 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::NoOutputs { workspaces } => {
                 for ws in workspaces {
                     ws.update_config(options.clone());
+
+                    // Workspace numbers only exist in i3 mode.
+                    if !options.is_i3() {
+                        ws.number = None;
+                    }
                 }
             }
         }
@@ -3449,6 +3618,17 @@ impl<W: LayoutElement> Layout<W> {
 
             if ws.floating_is_active() {
                 self.move_to_output(None, output, None, ActivateWindow::Smart);
+                return;
+            }
+
+            // There are no columns in i3 mode, move the focused window instead.
+            if ws.is_i3() {
+                let activate = if activate {
+                    ActivateWindow::Smart
+                } else {
+                    ActivateWindow::No
+                };
+                self.move_to_output(None, output, target_ws_idx, activate);
                 return;
             }
 
@@ -4299,6 +4479,15 @@ impl<W: LayoutElement> Layout<W> {
                             allow_to_activate_workspace,
                         );
                     }
+                    InsertPosition::Tiling(leaf_idx, side) => {
+                        mon.add_tile_to_tiling(
+                            ws_idx,
+                            leaf_idx,
+                            side,
+                            move_.tile,
+                            allow_to_activate_workspace,
+                        );
+                    }
                     InsertPosition::Floating => {
                         let mut tile = move_.tile;
                         tile.floating_pos = None;
@@ -4886,6 +5075,8 @@ impl<W: LayoutElement> Layout<W> {
 
         self.is_active = is_active;
 
+        self.assign_i3_numbers();
+
         let mut ongoing_scrolling_dnd = self.dnd.is_some().then_some(true);
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -4960,6 +5151,31 @@ impl<W: LayoutElement> Layout<W> {
                 }
             }
         }
+    }
+
+    /// Returns the workspaces to show to clients, with the number to show for each.
+    ///
+    /// Outside i3 mode, these are all workspaces numbered by position. In i3 mode, this is their
+    /// i3 number, and the trailing empty workspace isn't shown.
+    pub fn visible_workspaces(
+        &self,
+    ) -> impl Iterator<Item = (Option<&Monitor<W>>, usize, u8, &Workspace<W>)> + '_ {
+        let is_i3 = self.options.is_i3();
+        self.workspaces().filter_map(move |(mon, ws_idx, ws)| {
+            let by_position = u8::try_from(ws_idx + 1).unwrap_or(u8::MAX);
+            if !is_i3 {
+                return Some((mon, ws_idx, by_position, ws));
+            }
+
+            let is_active = mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx);
+            match ws.number {
+                Some(number) => Some((mon, ws_idx, number, ws)),
+                None if is_active || ws.has_windows_or_name() => {
+                    Some((mon, ws_idx, by_position, ws))
+                }
+                None => None,
+            }
+        })
     }
 
     pub fn workspaces(

@@ -131,6 +131,8 @@ pub struct WorkspaceSwitchGesture {
 pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
+    /// Next to a tile in the i3 tiling layout: its index in tree order and the side.
+    Tiling(usize, super::tiling::Direction),
     Floating,
 }
 
@@ -328,7 +330,7 @@ impl<W: LayoutElement> Monitor<W> {
         let ws = Workspace::new(output.clone(), clock.clone(), options.clone());
         workspaces.push(ws);
 
-        Self {
+        let mut monitor = Self {
             output_name: output.name(),
             output,
             scale,
@@ -347,7 +349,11 @@ impl<W: LayoutElement> Monitor<W> {
             base_options,
             options,
             layout_config,
-        }
+        };
+
+        // Workspaces taken from other monitors keep their i3 numbers.
+        monitor.sort_i3_workspaces();
+        monitor
     }
 
     pub fn into_workspaces(mut self) -> Vec<Workspace<W>> {
@@ -457,6 +463,12 @@ impl<W: LayoutElement> Monitor<W> {
 
         let prev_active_idx = self.active_workspace_idx;
         self.active_workspace_idx = idx;
+
+        // In i3 mode, workspaces switch instantly outside the overview.
+        if self.options.is_i3() && self.workspace_switch.is_none() && !self.overview_open {
+            self.clean_up_workspaces();
+            return;
+        }
 
         let config = config.unwrap_or(self.options.animations.workspace_switch.0);
 
@@ -620,6 +632,32 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    /// Adds a tile next to another one in the i3 tiling layout.
+    pub fn add_tile_to_tiling(
+        &mut self,
+        workspace_idx: usize,
+        leaf_idx: usize,
+        side: super::tiling::Direction,
+        tile: Tile<W>,
+        allow_to_activate_workspace: bool,
+    ) {
+        let workspace = &mut self.workspaces[workspace_idx];
+
+        workspace.add_tile_next_to_tiling(leaf_idx, side, tile);
+
+        // After adding a new window, workspace becomes this output's own.
+        if workspace.name().is_none() {
+            workspace.original_outputs = vec![OutputId::new(&self.output)];
+        }
+
+        // Since we're adding a window next to an existing one, the workspace isn't empty, and
+        // therefore cannot be the last one, so we never need to insert a new empty workspace.
+
+        if allow_to_activate_workspace {
+            self.activate_workspace(workspace_idx);
+        }
+    }
+
     pub fn add_tile_to_column(
         &mut self,
         workspace_idx: usize,
@@ -682,6 +720,82 @@ impl<W: LayoutElement> Monitor<W> {
             self.workspaces.remove(1);
             self.active_workspace_idx = 0;
         }
+
+        // In i3 mode, the trailing empty workspace only keeps its number while it's focused.
+        let last_idx = self.workspaces.len() - 1;
+        if last_idx != self.active_workspace_idx && !self.workspaces[last_idx].has_windows() {
+            self.workspaces[last_idx].number = None;
+        }
+    }
+
+    /// Returns whether a workspace is shown in i3 mode, i.e. it isn't the trailing empty one.
+    fn is_i3_shown(&self, idx: usize) -> bool {
+        let ws = &self.workspaces[idx];
+        idx == self.active_workspace_idx || ws.number.is_some() || ws.has_windows_or_name()
+    }
+
+    /// Returns the previous or next shown workspace in i3 mode, wrapping around.
+    fn i3_neighbour_idx(&self, forward: bool) -> Option<usize> {
+        let shown: Vec<usize> = (0..self.workspaces.len())
+            .filter(|&idx| self.is_i3_shown(idx))
+            .collect();
+        let pos = shown
+            .iter()
+            .position(|&idx| idx == self.active_workspace_idx)?;
+        let new_pos = if forward {
+            (pos + 1) % shown.len()
+        } else {
+            (pos + shown.len() - 1) % shown.len()
+        };
+        (new_pos != pos).then_some(shown[new_pos])
+    }
+
+    /// Sorts workspaces by number in i3 mode.
+    ///
+    /// Numbered workspaces come first, then named and non-empty ones in their current order, then
+    /// empty ones. The last workspace stays empty and unnamed.
+    pub(super) fn sort_i3_workspaces(&mut self) {
+        // Don't reorder workspaces in the middle of a switch in the overview.
+        if !self.options.is_i3() || self.workspace_switch.is_some() {
+            return;
+        }
+
+        let active_id = self.workspaces[self.active_workspace_idx].id();
+        self.workspaces.sort_by_key(|ws| match ws.number {
+            Some(number) => (0, number),
+            None if ws.has_windows_or_name() => (1, 0),
+            None => (2, 0),
+        });
+
+        // The focused trailing workspace may be numbered, but it must stay empty and unnamed.
+        if self.workspaces.last().unwrap().has_windows_or_name() {
+            self.add_workspace_bottom();
+        }
+
+        self.active_workspace_idx = self.idx_of_ws(active_id).unwrap();
+        self.clean_up_workspaces();
+    }
+
+    /// Returns the index where a new workspace with this number should go in i3 mode.
+    pub(super) fn i3_insert_idx(&self, number: u8) -> usize {
+        self.workspaces
+            .iter()
+            .position(|ws| ws.number.is_none_or(|n| n > number))
+            .unwrap_or(self.workspaces.len())
+    }
+
+    /// Adds an empty workspace with this number, returning its index.
+    pub(super) fn add_i3_workspace(&mut self, number: u8) -> usize {
+        let idx = self.i3_insert_idx(number);
+        self.add_workspace_at(idx);
+        self.workspaces[idx].number = Some(number);
+
+        // The last workspace must stay empty and unnumbered.
+        if idx == self.workspaces.len() - 1 {
+            self.add_workspace_bottom();
+        }
+
+        idx
     }
 
     /// Returns the index up to which empty workspaces are kept when positional workspaces are
@@ -708,6 +822,11 @@ impl<W: LayoutElement> Monitor<W> {
         }
 
         while self.workspaces.len() <= idx {
+            self.add_workspace_bottom();
+        }
+
+        // With empty_workspace_above_first, there must be just 1 or 3+ workspaces.
+        if self.options.layout.empty_workspace_above_first && self.workspaces.len() == 2 {
             self.add_workspace_bottom();
         }
     }
@@ -779,6 +898,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         self.workspace_switch = None;
         self.clean_up_workspaces();
+        self.sort_i3_workspaces();
     }
 
     pub fn append_workspaces(&mut self, mut workspaces: Vec<Workspace<W>>) {
@@ -816,6 +936,7 @@ impl<W: LayoutElement> Monitor<W> {
         // (outside the workspace switch), we don't need to cancel it.
         self.workspace_switch = None;
         self.clean_up_workspaces();
+        self.sort_i3_workspaces();
     }
 
     pub fn move_down_or_to_workspace_down(&mut self) {
@@ -843,12 +964,26 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn move_to_workspace_up(&mut self, activate: ActivateWindow) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
+        let new_idx = if self.options.is_i3() {
+            let Some(idx) = self.i3_neighbour_idx(false) else {
+                return;
+            };
+            idx
+        } else {
+            self.active_workspace_idx.saturating_sub(1)
+        };
         self.move_to_workspace(None, new_idx, activate);
     }
 
     pub fn move_to_workspace_down(&mut self, activate: ActivateWindow) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
+        let new_idx = if self.options.is_i3() {
+            let Some(idx) = self.i3_neighbour_idx(true) else {
+                return;
+            };
+            idx
+        } else {
+            min(self.active_workspace_idx + 1, self.workspaces.len() - 1)
+        };
         self.move_to_workspace(None, new_idx, activate);
     }
 
@@ -948,16 +1083,41 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn move_column_to_workspace_up(&mut self, activate: bool) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
+        let new_idx = if self.options.is_i3() {
+            let Some(idx) = self.i3_neighbour_idx(false) else {
+                return;
+            };
+            idx
+        } else {
+            self.active_workspace_idx.saturating_sub(1)
+        };
         self.move_column_to_workspace(new_idx, activate);
     }
 
     pub fn move_column_to_workspace_down(&mut self, activate: bool) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
+        let new_idx = if self.options.is_i3() {
+            let Some(idx) = self.i3_neighbour_idx(true) else {
+                return;
+            };
+            idx
+        } else {
+            min(self.active_workspace_idx + 1, self.workspaces.len() - 1)
+        };
         self.move_column_to_workspace(new_idx, activate);
     }
 
     pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
+        // There are no columns in i3 mode, move the focused window instead.
+        if self.options.is_i3() {
+            let activate = if activate {
+                ActivateWindow::Smart
+            } else {
+                ActivateWindow::No
+            };
+            self.move_to_workspace(None, idx, activate);
+            return;
+        }
+
         let source_workspace_idx = self.active_workspace_idx;
 
         let workspace = &self.workspaces[source_workspace_idx];
@@ -1025,6 +1185,12 @@ impl<W: LayoutElement> Monitor<W> {
                 let new = current.ceil() - 1.;
                 new.clamp(0., (self.workspaces.len() - 1) as f64) as usize
             }
+            _ if self.options.is_i3() => {
+                let Some(idx) = self.i3_neighbour_idx(false) else {
+                    return;
+                };
+                idx
+            }
             _ => self.active_workspace_idx.saturating_sub(1),
         };
 
@@ -1038,6 +1204,12 @@ impl<W: LayoutElement> Monitor<W> {
                 let current = gesture.current_idx;
                 let new = current.floor() + 1.;
                 new.clamp(0., (self.workspaces.len() - 1) as f64) as usize
+            }
+            _ if self.options.is_i3() => {
+                let Some(idx) = self.i3_neighbour_idx(true) else {
+                    return;
+                };
+                idx
             }
             _ => min(self.active_workspace_idx + 1, self.workspaces.len() - 1),
         };
@@ -1084,6 +1256,8 @@ impl<W: LayoutElement> Monitor<W> {
                 if anim.is_done() {
                     self.workspace_switch = None;
                     self.clean_up_workspaces();
+                    // Sorting is skipped during switches in the overview.
+                    self.sort_i3_workspaces();
                 }
             }
             Some(WorkspaceSwitch::Gesture(gesture)) => {
@@ -1251,6 +1425,14 @@ impl<W: LayoutElement> Monitor<W> {
         let positional_turned_off =
             self.options.layout.positional_workspaces && !options.layout.positional_workspaces;
 
+        // Workspace numbers only exist in i3 mode. When turning it on, they're assigned on the
+        // next refresh.
+        if self.options.is_i3() && !options.is_i3() {
+            for ws in &mut self.workspaces {
+                ws.number = None;
+            }
+        }
+
         for ws in &mut self.workspaces {
             ws.update_config(options.clone());
         }
@@ -1297,6 +1479,11 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn move_workspace_down(&mut self) {
+        // In i3 mode, workspaces are always sorted by number.
+        if self.options.is_i3() {
+            return;
+        }
+
         let mut new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
         if new_idx == self.active_workspace_idx {
             return;
@@ -1323,6 +1510,11 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn move_workspace_up(&mut self) {
+        // In i3 mode, workspaces are always sorted by number.
+        if self.options.is_i3() {
+            return;
+        }
+
         let mut new_idx = self.active_workspace_idx.saturating_sub(1);
         if new_idx == self.active_workspace_idx {
             return;
@@ -1349,7 +1541,8 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn move_workspace_to_idx(&mut self, old_idx: usize, new_idx: usize) {
-        if self.workspaces.len() <= old_idx {
+        // In i3 mode, workspaces are always sorted by number.
+        if self.options.is_i3() || self.workspaces.len() <= old_idx {
             return;
         }
 
@@ -1454,6 +1647,11 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn workspace_render_idx(&self) -> f64 {
+        // In i3 mode, workspaces are only laid out as a strip in the overview.
+        if self.options.is_i3() && self.overview_progress.is_none() {
+            return self.active_workspace_idx as f64;
+        }
+
         // If workspace switch and overview progress are matching animations, then compute a
         // correction term to make the movement appear monotonic.
         if let (
@@ -2127,6 +2325,17 @@ impl<W: LayoutElement> Monitor<W> {
 
         velocity *= rubber_band.clamp_derivative(min, max, gesture.start_idx + current_pos);
 
+        // In i3 mode, a gesture outside the overview switches to the next or previous workspace.
+        if self.options.is_i3() && !self.overview_open && gesture.dnd_last_event_time.is_none() {
+            self.workspace_switch = None;
+            match new_idx.cmp(&self.active_workspace_idx) {
+                std::cmp::Ordering::Less => self.switch_workspace_up(),
+                std::cmp::Ordering::Greater => self.switch_workspace_down(),
+                std::cmp::Ordering::Equal => self.clean_up_workspaces(),
+            }
+            return true;
+        }
+
         if self.active_workspace_idx != new_idx {
             self.previous_workspace_id = Some(self.workspaces[self.active_workspace_idx].id());
         }
@@ -2223,6 +2432,29 @@ impl<W: LayoutElement> Monitor<W> {
                 self.workspaces.len() != 2,
                 "if empty_workspace_above_first is set there must be just 1 or 3+ workspaces"
             )
+        }
+
+        if self.options.is_i3() {
+            if self.workspace_switch.is_none() {
+                let numbers: Vec<u8> = self.workspaces.iter().filter_map(|ws| ws.number).collect();
+                assert!(
+                    numbers.is_sorted(),
+                    "numbered workspaces must be sorted in i3 mode: {numbers:?}"
+                );
+
+                let last_idx = self.workspaces.len() - 1;
+                if last_idx != self.active_workspace_idx {
+                    assert!(
+                        self.workspaces[last_idx].number.is_none(),
+                        "trailing empty workspace can't be numbered unless it's active"
+                    );
+                }
+            }
+        } else {
+            assert!(
+                self.workspaces.iter().all(|ws| ws.number.is_none()),
+                "workspaces are only numbered in i3 mode"
+            );
         }
 
         // If there's no workspace switch in progress, there can't be any non-last non-active

@@ -454,6 +454,22 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         display: ColumnDisplay,
     },
+    /// Split the focused window or container (i3 layout mode).
+    Split {
+        /// Direction to split in.
+        #[cfg_attr(feature = "clap", arg())]
+        direction: SplitDirection,
+    },
+    /// Change the layout of the container the focused window is in (i3 layout mode).
+    Layout {
+        /// Layout to set.
+        #[cfg_attr(feature = "clap", arg())]
+        layout: ContainerLayout,
+    },
+    /// Focus the parent container of the focused window or container (i3 layout mode).
+    FocusParent {},
+    /// Focus the child of the focused container (i3 layout mode).
+    FocusChild {},
     /// Center the focused column on the screen.
     CenterColumn {},
     /// Center a window on the screen.
@@ -995,6 +1011,36 @@ pub enum LayoutSwitchTarget {
     Prev,
     /// The specific layout by index.
     Index(u8),
+}
+
+/// Direction of the `split` action in i3 layout mode.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum SplitDirection {
+    /// New windows go next to the focused one.
+    Horizontal,
+    /// New windows go below the focused one.
+    Vertical,
+    /// The opposite of the current container's direction.
+    Toggle,
+}
+
+/// Container layout for the `layout` action in i3 layout mode.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum ContainerLayout {
+    /// Windows side by side.
+    Splith,
+    /// Windows on top of each other.
+    Splitv,
+    /// One window visible at a time, with tabs.
+    Tabbed,
+    /// One window visible at a time, with stacked tabs.
+    Stacking,
+    /// Toggle between splith and splitv.
+    ToggleSplit,
+    /// Cycle through all layouts.
+    ToggleAll,
 }
 
 /// How windows display in a column.
@@ -1872,6 +1918,37 @@ impl FromStr for LayoutSwitchTarget {
                 Ok(layout) => Ok(Self::Index(layout)),
                 _ => Err(r#"invalid layout action, can be "next", "prev" or a layout index"#),
             },
+        }
+    }
+}
+
+impl FromStr for SplitDirection {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "horizontal" => Ok(Self::Horizontal),
+            "vertical" => Ok(Self::Vertical),
+            "toggle" => Ok(Self::Toggle),
+            _ => Err(r#"invalid split direction, can be "horizontal", "vertical" or "toggle""#),
+        }
+    }
+}
+
+impl FromStr for ContainerLayout {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "splith" => Ok(Self::Splith),
+            "splitv" => Ok(Self::Splitv),
+            "tabbed" => Ok(Self::Tabbed),
+            "stacking" => Ok(Self::Stacking),
+            "toggle-split" => Ok(Self::ToggleSplit),
+            "toggle-all" => Ok(Self::ToggleAll),
+            _ => Err(
+                r#"invalid layout, can be "splith", "splitv", "tabbed", "stacking", "toggle-split" or "toggle-all""#,
+            ),
         }
     }
 }

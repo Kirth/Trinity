@@ -8,7 +8,7 @@ use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
     Action, Bind, Binds, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
 };
-use niri_ipc::LayoutSwitchTarget;
+use niri_ipc::{ContainerLayout, LayoutSwitchTarget, SplitDirection};
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
     GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
@@ -48,6 +48,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::scrolling::ScrollDirection;
+use crate::layout::tiling::{ContainerLayout as TilingLayout, LayoutCommand, SplitCommand};
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -1327,8 +1328,9 @@ impl State {
                 self.niri.queue_redraw_all();
             }
             Action::MoveWindowToWorkspace(reference, focus) => {
-                if let Some((mut output, index)) =
-                    self.niri.find_output_and_workspace_index(reference)
+                if let Some((mut output, index)) = self
+                    .niri
+                    .find_or_create_output_and_workspace_index(reference)
                 {
                     // The source output is always the active output, so if the target output is
                     // also the active output, we don't need to use move_to_output().
@@ -1364,6 +1366,7 @@ impl State {
                     // FIXME: granular
                     self.niri.queue_redraw_all();
                 }
+                self.niri.layout.clean_up_i3_workspaces();
             }
             Action::MoveWindowToWorkspaceById {
                 window_id: id,
@@ -1373,8 +1376,9 @@ impl State {
                 let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
                 let window = window.map(|(_, m)| m.window.clone());
                 if let Some(window) = window {
-                    if let Some((output, index)) =
-                        self.niri.find_output_and_workspace_index(reference)
+                    if let Some((output, index)) = self
+                        .niri
+                        .find_or_create_output_and_workspace_index(reference)
                     {
                         let target_was_active = self
                             .niri
@@ -1421,6 +1425,7 @@ impl State {
                         self.niri.queue_redraw_all();
                     }
                 }
+                self.niri.layout.clean_up_i3_workspaces();
             }
             Action::MoveColumnToWorkspaceDown(focus) => {
                 self.niri.layout.move_column_to_workspace_down(focus);
@@ -1435,8 +1440,9 @@ impl State {
                 self.niri.queue_redraw_all();
             }
             Action::MoveColumnToWorkspace(reference, focus) => {
-                if let Some((mut output, index)) =
-                    self.niri.find_output_and_workspace_index(reference)
+                if let Some((mut output, index)) = self
+                    .niri
+                    .find_or_create_output_and_workspace_index(reference)
                 {
                     if let Some(active) = self.niri.layout.active_output() {
                         if output.as_ref() == Some(active) {
@@ -1461,6 +1467,7 @@ impl State {
                     // FIXME: granular
                     self.niri.queue_redraw_all();
                 }
+                self.niri.layout.clean_up_i3_workspaces();
             }
             Action::MoveColumnToIndex(idx) => {
                 self.niri.layout.move_column_to_index(idx);
@@ -1503,8 +1510,9 @@ impl State {
                 }
             }
             Action::FocusWorkspace(reference) => {
-                if let Some((mut output, index)) =
-                    self.niri.find_output_and_workspace_index(reference)
+                if let Some((mut output, index)) = self
+                    .niri
+                    .find_or_create_output_and_workspace_index(reference)
                 {
                     if let Some(active) = self.niri.layout.active_output() {
                         if output.as_ref() == Some(active) {
@@ -1532,6 +1540,7 @@ impl State {
                     // FIXME: granular
                     self.niri.queue_redraw_all();
                 }
+                self.niri.layout.clean_up_i3_workspaces();
             }
             Action::FocusWorkspacePrevious => {
                 self.niri.layout.switch_workspace_previous();
@@ -1614,6 +1623,40 @@ impl State {
             Action::SetColumnDisplay(display) => {
                 self.niri.layout.set_column_display(display);
                 self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::Split(direction) => {
+                let command = match direction {
+                    SplitDirection::Horizontal => SplitCommand::Horizontal,
+                    SplitDirection::Vertical => SplitCommand::Vertical,
+                    SplitDirection::Toggle => SplitCommand::Toggle,
+                };
+                self.niri.layout.split(command);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::Layout(layout) => {
+                let command = match layout {
+                    ContainerLayout::Splith => LayoutCommand::Set(TilingLayout::SplitH),
+                    ContainerLayout::Splitv => LayoutCommand::Set(TilingLayout::SplitV),
+                    ContainerLayout::Tabbed => LayoutCommand::Set(TilingLayout::Tabbed),
+                    ContainerLayout::Stacking => LayoutCommand::Set(TilingLayout::Stacked),
+                    ContainerLayout::ToggleSplit => LayoutCommand::ToggleSplit,
+                    ContainerLayout::ToggleAll => LayoutCommand::ToggleAll,
+                };
+                self.niri.layout.set_container_layout(command);
+                self.maybe_warp_cursor_to_focus();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusParent => {
+                self.niri.layout.focus_parent();
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::FocusChild => {
+                self.niri.layout.focus_child();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }

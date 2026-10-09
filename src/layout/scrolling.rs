@@ -2561,7 +2561,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let loc = Point::from((self.column_x(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
-            InsertPosition::Floating => return None,
+            InsertPosition::Tiling(..) | InsertPosition::Floating => return None,
         };
 
         // First window on an empty workspace will cancel out any view offset. Replicate this
@@ -5393,6 +5393,15 @@ impl<W: LayoutElement> Column<W> {
     pub fn tiles(&self) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> + '_ {
         let offsets = self.tile_offsets_iter(self.data.iter().copied());
         zip(&self.tiles, offsets)
+    }
+
+    /// Takes the tiles out of the column, for adding them to a layout without columns.
+    pub fn into_tiles(self) -> Vec<Tile<W>> {
+        self.tiles
+    }
+
+    pub fn display_mode(&self) -> ColumnDisplay {
+        self.display_mode
     }
 
     fn tiles_mut(&mut self) -> impl Iterator<Item = (&mut Tile<W>, Point<f64, Logical>)> + '_ {

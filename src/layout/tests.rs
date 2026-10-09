@@ -3,8 +3,8 @@ use std::cell::{Cell, OnceCell, RefCell};
 use niri_config::utils::Flag;
 use niri_config::workspace::WorkspaceName;
 use niri_config::{
-    CenterFocusedColumn, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,
-    WorkspaceReference,
+    CenterFocusedColumn, FloatOrInt, LayoutMode, OutputName, Struts, TabIndicatorLength,
+    TabIndicatorPosition, WorkspaceReference,
 };
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
@@ -15,6 +15,7 @@ use super::*;
 
 mod animations;
 mod fullscreen;
+mod i3;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {
@@ -522,6 +523,16 @@ enum Op {
     FocusWorkspace(#[proptest(strategy = "0..=4usize")] usize),
     FocusWorkspaceAutoBackAndForth(#[proptest(strategy = "0..=4usize")] usize),
     FocusWorkspacePrevious,
+    /// `focus-workspace N` in i3 mode.
+    FocusI3Workspace(#[proptest(strategy = "1..=6u8")] u8),
+    /// i3's `split`.
+    Split(#[proptest(strategy = "arbitrary_split_command()")] tiling::SplitCommand),
+    /// i3's `layout`.
+    SetContainerLayout(#[proptest(strategy = "arbitrary_layout_command()")] tiling::LayoutCommand),
+    FocusParent,
+    FocusChild,
+    /// `move-column-to-workspace N` in i3 mode.
+    MoveColumnToI3Workspace(#[proptest(strategy = "1..=6u8")] u8, bool),
     MoveWindowToWorkspaceDown(bool),
     MoveWindowToWorkspaceUp(bool),
     MoveWindowToWorkspace {
@@ -1189,6 +1200,28 @@ impl Op {
                 layout.switch_workspace_auto_back_and_forth(idx)
             }
             Op::FocusWorkspacePrevious => layout.switch_workspace_previous(),
+            Op::Split(command) => layout.split(command),
+            Op::SetContainerLayout(command) => layout.set_container_layout(command),
+            Op::FocusParent => layout.focus_parent(),
+            Op::FocusChild => layout.focus_child(),
+            Op::FocusI3Workspace(number) => {
+                if let Some((output, idx)) = layout.find_or_create_i3_workspace(number) {
+                    if let Some(output) = output.filter(|o| layout.active_output() != Some(o)) {
+                        layout.focus_output(&output);
+                    }
+                    layout.switch_workspace(idx);
+                }
+                layout.clean_up_i3_workspaces();
+            }
+            Op::MoveColumnToI3Workspace(number, focus) => {
+                if let Some((output, idx)) = layout.find_or_create_i3_workspace(number) {
+                    match output.filter(|o| layout.active_output() != Some(o)) {
+                        Some(output) => layout.move_column_to_output(&output, Some(idx), focus),
+                        None => layout.move_column_to_workspace(idx, focus),
+                    }
+                }
+                layout.clean_up_i3_workspaces();
+            }
             Op::MoveWindowToWorkspaceDown(focus) => layout.move_to_workspace_down(focus),
             Op::MoveWindowToWorkspaceUp(focus) => layout.move_to_workspace_up(focus),
             Op::MoveWindowToWorkspace {
@@ -2989,6 +3022,19 @@ fn positional_workspaces_move_column() {
 }
 
 #[test]
+fn positional_workspaces_pad_with_empty_above_first() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::FocusWorkspaceAutoBackAndForth(1),
+        Op::CompleteAnimations,
+        Op::FocusWorkspace(0),
+        Op::CompleteAnimations,
+    ];
+    let layout = check_ops_with_options(positional_options(true), ops);
+    assert_eq!(single_monitor(&layout).workspaces.len(), 1);
+}
+
+#[test]
 fn positional_workspaces_move_window() {
     let ops = [
         Op::AddOutput(1),
@@ -4014,6 +4060,31 @@ fn arbitrary_struts() -> impl Strategy<Value = Struts> {
         })
 }
 
+fn arbitrary_split_command() -> impl Strategy<Value = tiling::SplitCommand> {
+    use tiling::SplitCommand;
+    prop_oneof![
+        Just(SplitCommand::Horizontal),
+        Just(SplitCommand::Vertical),
+        Just(SplitCommand::Toggle),
+    ]
+}
+
+fn arbitrary_layout_command() -> impl Strategy<Value = tiling::LayoutCommand> {
+    use tiling::{ContainerLayout, LayoutCommand};
+    prop_oneof![
+        Just(LayoutCommand::Set(ContainerLayout::SplitH)),
+        Just(LayoutCommand::Set(ContainerLayout::SplitV)),
+        Just(LayoutCommand::Set(ContainerLayout::Tabbed)),
+        Just(LayoutCommand::Set(ContainerLayout::Stacked)),
+        Just(LayoutCommand::ToggleSplit),
+        Just(LayoutCommand::ToggleAll),
+    ]
+}
+
+fn arbitrary_layout_mode() -> impl Strategy<Value = LayoutMode> {
+    prop_oneof![Just(LayoutMode::Scrolling), Just(LayoutMode::I3)]
+}
+
 fn arbitrary_center_focused_column() -> impl Strategy<Value = CenterFocusedColumn> {
     prop_oneof![
         Just(CenterFocusedColumn::Never),
@@ -4142,10 +4213,15 @@ proptest! {
     fn random_operations_dont_panic(
         ops: Vec<Op>,
         layout_config in arbitrary_layout_part(),
+        // Generated separately since it can only be set globally, not in per-output or
+        // per-workspace layout parts.
+        layout_mode in arbitrary_layout_mode(),
     ) {
         // eprintln!("{ops:?}");
+        let mut layout = niri_config::Layout::from_part(&layout_config);
+        layout.layout_mode = layout_mode;
         let options = Options {
-            layout: niri_config::Layout::from_part(&layout_config),
+            layout,
             ..Default::default()
         };
 

@@ -1906,7 +1906,7 @@ impl State {
                     continue;
                 }
 
-                let mut layout_config = config.and_then(|c| c.layout.clone());
+                let mut layout_config = config.and_then(|c| c.layout.clone().map(|x| x.0));
                 // Support the deprecated non-layout background-color key.
                 if let Some(layout) = &mut layout_config {
                     if layout.background_color.is_none() {
@@ -2993,7 +2993,7 @@ impl Niri {
             transform = Transform::Flipped180;
         }
 
-        let mut layout_config = c.and_then(|c| c.layout.clone());
+        let mut layout_config = c.and_then(|c| c.layout.clone().map(|x| x.0));
         // Support the deprecated non-layout background-color key.
         if let Some(layout) = &mut layout_config {
             if layout.background_color.is_none() {
@@ -3743,6 +3743,10 @@ impl Niri {
         workspace_reference: WorkspaceReference,
     ) -> Option<(Option<Output>, usize)> {
         let (target_workspace_index, target_workspace) = match workspace_reference {
+            // In i3 mode, the index is the workspace number.
+            WorkspaceReference::Index(number) if self.layout.is_i3() => {
+                return self.layout.find_i3_workspace(number);
+            }
             WorkspaceReference::Index(index) => {
                 return Some((None, index.saturating_sub(1) as usize));
             }
@@ -3755,6 +3759,23 @@ impl Niri {
 
         let target_output = target_workspace.current_output();
         Some((target_output.cloned(), target_workspace_index))
+    }
+
+    /// Like [`Self::find_output_and_workspace_index`], but in i3 mode creates a workspace that
+    /// doesn't exist yet.
+    ///
+    /// Call [`Layout::clean_up_i3_workspaces`] after using the result, in case the created
+    /// workspace ended up unused.
+    pub fn find_or_create_output_and_workspace_index(
+        &mut self,
+        workspace_reference: WorkspaceReference,
+    ) -> Option<(Option<Output>, usize)> {
+        match workspace_reference {
+            WorkspaceReference::Index(number) if self.layout.is_i3() => {
+                self.layout.find_or_create_i3_workspace(number)
+            }
+            reference => self.find_output_and_workspace_index(reference),
+        }
     }
 
     pub fn find_window_by_id(&self, id: MappedId) -> Option<Window> {

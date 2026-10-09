@@ -21,6 +21,7 @@ pub struct Layout {
     pub always_center_single_column: bool,
     pub empty_workspace_above_first: bool,
     pub positional_workspaces: bool,
+    pub layout_mode: LayoutMode,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
     pub struts: Struts,
@@ -45,6 +46,7 @@ impl Default for Layout {
             always_center_single_column: false,
             empty_workspace_above_first: false,
             positional_workspaces: false,
+            layout_mode: LayoutMode::I3,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
             struts: Struts::default(),
@@ -78,6 +80,7 @@ impl MergeWith<LayoutPart> for Layout {
             preset_column_widths,
             preset_window_heights,
             center_focused_column,
+            layout_mode,
             default_column_display,
             struts,
             background_color,
@@ -123,6 +126,8 @@ pub struct LayoutPart {
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child)]
     pub positional_workspaces: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub layout_mode: Option<LayoutMode>,
     #[knuffel(child, unwrap(argument, str))]
     pub default_column_display: Option<ColumnDisplay>,
     #[knuffel(child, unwrap(argument))]
@@ -161,6 +166,15 @@ pub struct Struts {
     pub top: FloatOrInt<-65535, 65535>,
     #[knuffel(child, unwrap(argument), default)]
     pub bottom: FloatOrInt<-65535, 65535>,
+}
+
+#[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum LayoutMode {
+    /// niri's scrollable columns with dynamic workspaces.
+    Scrolling,
+    /// i3-style container tree with numbered workspaces.
+    #[default]
+    I3,
 }
 
 #[derive(knuffel::DecodeScalar, Debug, Default, PartialEq, Eq, Clone, Copy)]
