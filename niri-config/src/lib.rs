@@ -708,6 +708,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_focus_window_with_hints() {
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+Semicolon { focus-window-with-hints; }
+            }
+            "#,
+        );
+        assert_eq!(parsed.binds.0[0].action, Action::FocusWindowWithHints);
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"

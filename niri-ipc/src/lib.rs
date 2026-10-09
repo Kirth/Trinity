@@ -472,6 +472,8 @@ pub enum Action {
     FocusChild {},
     /// Toggle the debug outlines of i3 containers.
     ToggleDebugI3Containers {},
+    /// Show a hint on every visible window, then focus the window whose hint is typed.
+    FocusWindowWithHints {},
     /// Center the focused column on the screen.
     CenterColumn {},
     /// Center a window on the screen.

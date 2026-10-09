@@ -122,6 +122,21 @@ binds {
 }
 ```
 
+### Jumping to windows
+
+`focus-window-with-hints` shows a hint in a circle at the top-left of every visible window, on all outputs, tiled and floating.
+Type a hint to focus its window: the hints use the keys <kbd>a</kbd> <kbd>s</kbd> <kbd>d</kbd> <kbd>f</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
+With more than seven windows, hints are two keys long, and the first key hides the hints that no longer match.
+Any other key, <kbd>Escape</kbd> or a click cancels.
+
+```kdl
+binds {
+    Mod+Semicolon { focus-window-with-hints; }
+}
+```
+
+This action also works in the scrolling layout.
+
 ### Seeing the containers
 
 Containers are invisible, which can make the tree hard to follow.

@@ -149,3 +149,75 @@ fn closing_doesnt_wait_for_unchanged_windows() {
     936 × 1048
     ");
 }
+
+/// Presses and releases a key, by its xkb name, through the normal input path.
+fn tap_key(f: &mut Fixture, name: &str) {
+    use smithay::backend::input::{InputEvent, InputTime, KeyState};
+
+    use crate::tests::test_input_backend::{TestInputBackend, TestKeyboardKeyEvent};
+
+    let state = f.niri_state();
+    let keyboard = state.niri.seat.get_keyboard().unwrap();
+    let code = keyboard.with_xkb_state(state, |xkb| {
+        let xkb = xkb.xkb().lock().unwrap();
+        let keymap = unsafe { xkb.keymap() };
+        keymap.key_by_name(name).unwrap()
+    });
+
+    for key_state in [KeyState::Pressed, KeyState::Released] {
+        f.niri_state()
+            .process_input_event(InputEvent::<TestInputBackend>::Keyboard {
+                event: TestKeyboardKeyEvent {
+                    time: InputTime::from_micros(0),
+                    code,
+                    state: key_state,
+                    count: 1,
+                },
+            });
+    }
+}
+
+fn focused_id(f: &mut Fixture) -> Option<crate::window::mapped::MappedId> {
+    f.niri().layout.focus().map(|m| m.id())
+}
+
+#[test]
+fn hints_focus_typed_window() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // Three windows side by side get the hints a, s, d from left to right.
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    // Windows in tree order, which is left to right here.
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    assert_eq!(ids.len(), 3);
+
+    f.niri_state().open_ace_hints();
+    assert!(f.niri().ace_hints.is_open());
+
+    tap_key(&mut f, "AC02"); // s
+    f.double_roundtrip(id);
+    assert!(!f.niri().ace_hints.is_open());
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+
+    // A key that isn't a hint closes the hints and leaves the focus alone.
+    f.niri_state().open_ace_hints();
+    tap_key(&mut f, "AD01"); // q
+    f.double_roundtrip(id);
+    assert!(!f.niri().ace_hints.is_open());
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+
+    // Escape cancels too.
+    f.niri_state().open_ace_hints();
+    tap_key(&mut f, "ESC");
+    assert!(!f.niri().ace_hints.is_open());
+
+    // And picking the first window works.
+    f.niri_state().open_ace_hints();
+    tap_key(&mut f, "AC01"); // a
+    f.double_roundtrip(id);
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+}

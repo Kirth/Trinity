@@ -168,6 +168,14 @@ impl State {
         let hide_exit_confirm_dialog =
             self.niri.exit_confirm_dialog.is_open() && should_hide_exit_confirm_dialog(&event);
 
+        // Clicking or touching cancels the window hints.
+        let cancel_ace_hints = self.niri.ace_hints.is_open()
+            && match &event {
+                InputEvent::PointerButton { event } => event.state() == ButtonState::Pressed,
+                InputEvent::TouchDown { .. } => true,
+                _ => false,
+            };
+
         let mut consumed_by_a11y = false;
         use InputEvent::*;
         match event {
@@ -211,6 +219,11 @@ impl State {
         }
 
         if hide_exit_confirm_dialog && self.niri.exit_confirm_dialog.hide() {
+            self.niri.queue_redraw_all();
+        }
+
+        if cancel_ace_hints {
+            self.niri.ace_hints.close();
             self.niri.queue_redraw_all();
         }
     }
@@ -519,6 +532,22 @@ impl State {
                     if raw == Some(Keysym::Return) {
                         info!("quitting after confirming exit dialog");
                         this.niri.stop_signal.stop();
+                    }
+
+                    // Don't send this press to any clients.
+                    this.niri.suppressed_keys.insert(key_code);
+                    return FilterResult::Intercept(None);
+                }
+
+                // While the window hints are shown, keys type a hint. Lone modifiers are ignored,
+                // anything that isn't a hint letter cancels.
+                if this.niri.ace_hints.is_open() && pressed {
+                    let sym = raw.or(Some(modified));
+                    if !sym.is_some_and(|sym| sym.is_modifier_key()) {
+                        let c = sym
+                            .filter(|sym| *sym != Keysym::Escape)
+                            .and_then(|sym| sym.key_char());
+                        this.ace_hints_press(c);
                     }
 
                     // Don't send this press to any clients.
@@ -1659,6 +1688,9 @@ impl State {
                 self.niri.layout.focus_child();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
+            }
+            Action::FocusWindowWithHints => {
+                self.open_ace_hints();
             }
             Action::ToggleDebugI3Containers => {
                 let config = self.niri.config.clone();

@@ -174,6 +174,7 @@ use crate::render_helpers::{
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
+use crate::ui::ace_hints::{AceHints, HintOutcome};
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
@@ -409,6 +410,7 @@ pub struct Niri {
     pub config_error_notification: ConfigErrorNotification,
     pub hotkey_overlay: HotkeyOverlay,
     pub exit_confirm_dialog: ExitConfirmDialog,
+    pub ace_hints: AceHints,
 
     pub window_mru_ui: WindowMruUi,
     pub pending_mru_commit: Option<PendingMruCommit>,
@@ -546,6 +548,7 @@ pub enum KeyboardFocus {
     ExitConfirmDialog,
     Overview,
     Mru,
+    AceHints,
 }
 
 #[derive(Default, Clone, PartialEq)]
@@ -695,6 +698,7 @@ impl KeyboardFocus {
             KeyboardFocus::ExitConfirmDialog => None,
             KeyboardFocus::Overview => None,
             KeyboardFocus::Mru => None,
+            KeyboardFocus::AceHints => None,
         }
     }
 
@@ -707,6 +711,7 @@ impl KeyboardFocus {
             KeyboardFocus::ExitConfirmDialog => None,
             KeyboardFocus::Overview => None,
             KeyboardFocus::Mru => None,
+            KeyboardFocus::AceHints => None,
         }
     }
 
@@ -1105,6 +1110,75 @@ impl State {
         self.niri.queue_redraw_all();
     }
 
+    /// Shows a hint on every visible window on every output, to focus it by typing the hint.
+    pub fn open_ace_hints(&mut self) {
+        let niri = &self.niri;
+        if niri.is_locked()
+            || niri.screenshot_ui.is_open()
+            || niri.window_mru_ui.is_open()
+            || niri.exit_confirm_dialog.is_open()
+            || niri.layout.is_overview_open()
+        {
+            return;
+        }
+
+        // Label windows left to right, top to bottom, across outputs in global coordinates.
+        let mut windows = Vec::new();
+        for output in niri.global_space.outputs() {
+            let output_loc = niri
+                .global_space
+                .output_geometry(output)
+                .unwrap()
+                .loc
+                .to_f64();
+            for (id, loc) in niri.ace_hint_windows(output) {
+                windows.push((id, output_loc + loc));
+            }
+        }
+        windows.sort_by(|(_, a), (_, b)| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+        let ids: Vec<_> = windows.into_iter().map(|(id, _)| id).collect();
+
+        match ids.as_slice() {
+            [] => (),
+            [id] => self.focus_window_by_mapped_id(*id),
+            _ => {
+                self.niri.ace_hints.open(ids);
+                self.niri.queue_redraw_all();
+            }
+        }
+    }
+
+    /// Handles a key press while the window hints are shown.
+    pub fn ace_hints_press(&mut self, c: Option<char>) {
+        let outcome = match c {
+            Some(c) => self.niri.ace_hints.press(c),
+            None => {
+                self.niri.ace_hints.close();
+                HintOutcome::Cancelled
+            }
+        };
+
+        if let HintOutcome::Selected(id) = outcome {
+            // Update the keyboard focus right away so that focus_window() can warp the cursor,
+            // like confirm_mru().
+            self.update_keyboard_focus();
+            self.focus_window_by_mapped_id(id);
+        }
+        self.niri.queue_redraw_all();
+    }
+
+    fn focus_window_by_mapped_id(&mut self, id: MappedId) {
+        let window = self
+            .niri
+            .layout
+            .windows()
+            .find(|(_, m)| m.id() == id)
+            .map(|(_, m)| m.window.clone());
+        if let Some(window) = window {
+            self.focus_window(&window);
+        }
+    }
+
     pub fn confirm_mru(&mut self) {
         if let Some(window) = self.niri.close_mru(MruCloseRequest::Confirm) {
             // focus_window() will warp the cursor to the window only when the keyboard focus is on
@@ -1270,6 +1344,8 @@ impl State {
             }
         } else if self.niri.screenshot_ui.is_open() {
             KeyboardFocus::ScreenshotUi
+        } else if self.niri.ace_hints.is_open() {
+            KeyboardFocus::AceHints
         } else if self.niri.window_mru_ui.is_open() {
             KeyboardFocus::Mru
         } else if let Some(output) = self.niri.layout.active_output() {
@@ -2753,6 +2829,7 @@ impl Niri {
             config_error_notification,
             hotkey_overlay,
             exit_confirm_dialog,
+            ace_hints: AceHints::new(),
 
             window_mru_ui,
             pending_mru_commit: None,
@@ -4167,6 +4244,7 @@ impl Niri {
             KeyboardFocus::ExitConfirmDialog => true,
             KeyboardFocus::Overview => true,
             KeyboardFocus::Mru => true,
+            KeyboardFocus::AceHints => true,
         };
 
         self.layout.refresh(layout_is_active);
@@ -4462,6 +4540,20 @@ impl Niri {
         // Draw the hotkey overlay on top.
         if let Some(element) = self.hotkey_overlay.render(ctx.renderer, output) {
             push(element.into());
+        }
+
+        // Then, the window hints.
+        if self.ace_hints.is_open() {
+            let scale = output.current_scale().fractional_scale();
+            let color = self.config.borrow().layout.focus_ring.active_color;
+            let windows = self.ace_hint_windows(output);
+            self.ace_hints.render(
+                ctx.renderer,
+                scale,
+                color,
+                windows.into_iter(),
+                &mut |elem| push(elem.into()),
+            );
         }
 
         // Then, the Alt-Tab switcher.
@@ -6449,6 +6541,29 @@ impl Niri {
         });
 
         Ok(())
+    }
+
+    /// Visible windows on this output with their top-left corner, clipped to the output, in
+    /// output-local logical coordinates.
+    pub fn ace_hint_windows(&self, output: &Output) -> Vec<(MappedId, Point<f64, Logical>)> {
+        let Some(mon) = self.layout.monitor_for_output(output) else {
+            return Vec::new();
+        };
+        let output_rect = Rectangle::from_size(output_size(output));
+
+        let mut rv = Vec::new();
+        for (ws, ws_geo) in mon.workspaces_with_render_geo() {
+            for (tile, pos, visible) in ws.tiles_with_render_positions() {
+                if !visible {
+                    continue;
+                }
+                let rect = Rectangle::new(ws_geo.loc + pos, tile.tile_size());
+                if let Some(rect) = rect.intersection(output_rect) {
+                    rv.push((tile.window().id(), rect.loc));
+                }
+            }
+        }
+        rv
     }
 
     pub fn is_locked(&self) -> bool {

@@ -217,6 +217,7 @@ pub enum Action {
     FocusParent,
     FocusChild,
     ToggleDebugI3Containers,
+    FocusWindowWithHints,
     CenterColumn,
     CenterWindow,
     #[knuffel(skip)]
@@ -518,6 +519,7 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::FocusParent {} => Self::FocusParent,
             niri_ipc::Action::FocusChild {} => Self::FocusChild,
             niri_ipc::Action::ToggleDebugI3Containers {} => Self::ToggleDebugI3Containers,
+            niri_ipc::Action::FocusWindowWithHints {} => Self::FocusWindowWithHints,
             niri_ipc::Action::CenterColumn {} => Self::CenterColumn,
             niri_ipc::Action::CenterWindow { id: None } => Self::CenterWindow,
             niri_ipc::Action::CenterWindow { id: Some(id) } => Self::CenterWindowById(id),
