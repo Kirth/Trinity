@@ -648,6 +648,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_side_view() {
+        let parsed = do_parse("");
+        assert_eq!(parsed.layout.side_view, SideView::default());
+
+        let parsed = do_parse("layout {\n side-view {\n width 0.3\n opacity 1\n gap 8\n }\n}");
+        assert_eq!(
+            parsed.layout.side_view,
+            SideView {
+                width: 0.3,
+                opacity: 1.,
+                gap: 8.,
+            }
+        );
+
+        // Partial blocks keep the other defaults.
+        let parsed = do_parse("layout {\n side-view {\n opacity 0.5\n }\n}");
+        assert_eq!(parsed.layout.side_view.opacity, 0.5);
+        assert_eq!(parsed.layout.side_view.width, 0.25);
+
+        assert!(Config::parse_mem("layout {\n side-view {\n opacity 1.5\n }\n}").is_err());
+    }
+
+    #[test]
     fn parse_layout_mode() {
         let parsed = do_parse(r#"layout { layout-mode "i3"; }"#);
         assert_eq!(parsed.layout.layout_mode, LayoutMode::I3);
@@ -717,6 +740,32 @@ mod tests {
             "#,
         );
         assert_eq!(parsed.binds.0[0].action, Action::FocusWindowWithHints);
+    }
+
+    #[test]
+    fn parse_pushaway() {
+        assert!(do_parse("").layout.pushaway);
+        assert!(!do_parse("layout { pushaway false; }").layout.pushaway);
+        assert!(Config::parse_mem(r#"output "DP-1" { layout { pushaway false; } }"#).is_err());
+        assert!(Config::parse_mem(r#"workspace "a" { layout { pushaway false; } }"#).is_err());
+
+        // focus is optional on move actions: unset means "go by pushaway".
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+1 { move-window-to-workspace 1; }
+                Mod+2 { move-window-to-workspace 2 focus=true; }
+            }
+            "#,
+        );
+        assert_eq!(
+            parsed.binds.0[0].action,
+            Action::MoveWindowToWorkspace(WorkspaceReference::Index(1), None)
+        );
+        assert_eq!(
+            parsed.binds.0[1].action,
+            Action::MoveWindowToWorkspace(WorkspaceReference::Index(2), Some(true))
+        );
     }
 
     #[test]
@@ -1558,6 +1607,11 @@ mod tests {
                             },
                         },
                     ),
+                },
+                side_view: SideView {
+                    width: 0.25,
+                    opacity: 0.9,
+                    gap: 16.0,
                 },
                 preset_column_widths: [
                     Proportion(

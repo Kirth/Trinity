@@ -345,6 +345,11 @@ pub enum Action {
     ToggleWindowFloating,
     #[knuffel(skip)]
     ToggleWindowFloatingById(u64),
+    ToggleSideView,
+    #[knuffel(skip)]
+    ToggleSideViewById(u64),
+    SideViewNextCorner,
+    SideViewPrevCorner,
     MoveWindowToFloating,
     #[knuffel(skip)]
     MoveWindowToFloatingById(u64),
@@ -683,6 +688,10 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::ToggleDebugTint {} => Self::ToggleDebugTint,
             niri_ipc::Action::DebugToggleOpaqueRegions {} => Self::DebugToggleOpaqueRegions,
             niri_ipc::Action::DebugToggleDamage {} => Self::DebugToggleDamage,
+            niri_ipc::Action::ToggleSideView { id: None } => Self::ToggleSideView,
+            niri_ipc::Action::ToggleSideView { id: Some(id) } => Self::ToggleSideViewById(id),
+            niri_ipc::Action::SideViewNextCorner {} => Self::SideViewNextCorner,
+            niri_ipc::Action::SideViewPrevCorner {} => Self::SideViewPrevCorner,
             niri_ipc::Action::ToggleWindowFloating { id: None } => Self::ToggleWindowFloating,
             niri_ipc::Action::ToggleWindowFloating { id: Some(id) } => {
                 Self::ToggleWindowFloatingById(id)

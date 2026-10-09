@@ -454,6 +454,25 @@ impl<W: LayoutElement> Monitor<W> {
         idx: usize,
         config: Option<niri_config::Animation>,
     ) {
+        let prev_active_id = self.workspaces[self.active_workspace_idx].id();
+
+        self.activate_workspace_inner(idx, config);
+
+        // Side-view windows follow the active workspace.
+        if let Some(from_idx) = self.idx_of_ws(prev_active_id) {
+            let config = self
+                .workspace_switch
+                .is_some()
+                .then(|| config.unwrap_or(self.options.animations.workspace_switch.0));
+            self.carry_side_view(from_idx, config);
+
+            if self.options.is_i3() && self.workspace_switch.is_none() && !self.overview_open {
+                self.clean_up_workspaces();
+            }
+        }
+    }
+
+    fn activate_workspace_inner(&mut self, idx: usize, config: Option<niri_config::Animation>) {
         // FIXME: also compute and use current velocity.
         let current_idx = self.workspace_render_idx();
 
@@ -499,6 +518,48 @@ impl<W: LayoutElement> Monitor<W> {
                     0.,
                     config,
                 )));
+            }
+        }
+    }
+
+    /// Moves side-view windows from a workspace over to the active workspace.
+    ///
+    /// Side-view windows follow workspace switches, so they stay on screen. With an animation
+    /// config, the windows are animated to look stationary during the workspace switch.
+    fn carry_side_view(&mut self, from_idx: usize, config: Option<niri_config::Animation>) {
+        let mut to_idx = self.active_workspace_idx;
+        if from_idx == to_idx || from_idx >= self.workspaces.len() {
+            return;
+        }
+
+        let tiles = self.workspaces[from_idx].take_side_view_tiles();
+        if tiles.is_empty() {
+            return;
+        }
+
+        let delta_y = self.workspace_size_with_gap(1.).h * (from_idx as f64 - to_idx as f64);
+
+        // Keep the empty workspaces around the edges, like when adding any other window.
+        if to_idx == self.workspaces.len() - 1 {
+            self.add_workspace_bottom();
+        }
+        if self.options.layout.empty_workspace_above_first && to_idx == 0 {
+            self.add_workspace_top();
+            to_idx += 1;
+        }
+
+        for tile in tiles {
+            let id = tile.window().id().clone();
+            let ws = &mut self.workspaces[to_idx];
+            ws.add_side_view_tile(tile);
+
+            if let Some(config) = config {
+                let (tile, _) = ws
+                    .tiles_with_render_positions_mut(false)
+                    .find(|(tile, _)| tile.window().id() == &id)
+                    .unwrap();
+                tile.animate_move_from_with_config(Point::from((0., delta_y)), config);
+                tile.set_anim_y_between_workspaces();
             }
         }
     }
@@ -2340,6 +2401,7 @@ impl<W: LayoutElement> Monitor<W> {
             self.previous_workspace_id = Some(self.workspaces[self.active_workspace_idx].id());
         }
 
+        let prev_active_idx = self.active_workspace_idx;
         self.active_workspace_idx = new_idx;
         self.workspace_switch = Some(WorkspaceSwitch::Animation(Animation::new(
             self.clock.clone(),
@@ -2348,6 +2410,10 @@ impl<W: LayoutElement> Monitor<W> {
             velocity,
             self.options.animations.workspace_switch.0,
         )));
+        self.carry_side_view(
+            prev_active_idx,
+            Some(self.options.animations.workspace_switch.0),
+        );
 
         true
     }

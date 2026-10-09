@@ -54,6 +54,7 @@ use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
 
 pub use self::monitor::MonitorRenderElement;
 use self::monitor::{Monitor, WorkspaceSwitch};
+use self::side_view::Corner;
 use self::workspace::{OutputId, Workspace};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
@@ -83,6 +84,7 @@ pub mod monitor;
 pub mod opening_window;
 pub mod scrolling;
 pub mod shadow;
+pub mod side_view;
 pub mod tab_indicator;
 pub mod tile;
 pub mod tiling;
@@ -3409,6 +3411,36 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_window_floating(window);
     }
 
+    pub fn toggle_side_view(&mut self, window: Option<&W::Id>) {
+        if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
+            if window.is_none() || window == Some(move_.tile.window().id()) {
+                return;
+            }
+        }
+
+        let workspace = if let Some(window) = window {
+            Some(
+                self.workspaces_mut()
+                    .find(|ws| ws.has_window(window))
+                    .unwrap(),
+            )
+        } else {
+            self.active_workspace_mut()
+        };
+
+        let Some(workspace) = workspace else {
+            return;
+        };
+        workspace.toggle_side_view(window);
+    }
+
+    /// Moves the side-view window on the active workspace to the next or previous corner.
+    pub fn side_view_cycle_corner(&mut self, forward: bool) {
+        if let Some(workspace) = self.active_workspace_mut() {
+            workspace.side_view_cycle_corner(forward);
+        }
+    }
+
     pub fn set_window_floating(&mut self, window: Option<&W::Id>, floating: bool) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
@@ -4378,6 +4410,11 @@ impl<W: LayoutElement> Layout<W> {
             );
         }
 
+        // Side-view windows dropped into the tiled layout leave side view.
+        if !move_.is_floating {
+            move_.tile.leave_side_view();
+        }
+
         // Dragging in the overview shouldn't switch the workspace and so on.
         let allow_to_activate_workspace = !self.overview_open;
 
@@ -4499,8 +4536,16 @@ impl<W: LayoutElement> Layout<W> {
                             InsertWorkspace::Existing(_) => {
                                 if let Some(offset) = offset {
                                     let pos = (tile_render_loc - offset).downscale(zoom);
-                                    let pos =
-                                        mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
+                                    let ws = &mon.workspaces[ws_idx];
+
+                                    // Side-view windows snap to the corner nearest to the drop.
+                                    let center = pos + tile.tile_size().downscale(2.).to_point();
+                                    let center = ws.floating_logical_to_size_frac(center);
+                                    if let Some(side_view) = &mut tile.side_view {
+                                        side_view.corner = Corner::nearest(center);
+                                    }
+
+                                    let pos = ws.floating_logical_to_size_frac(pos);
                                     tile.floating_pos = Some(pos);
                                 } else {
                                     error!(

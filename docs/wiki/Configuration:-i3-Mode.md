@@ -184,6 +184,28 @@ binds {
 
 This action also works in the scrolling layout.
 
+### Side view
+
+`toggle-side-view` turns the focused window into a side-view window, picture-in-picture style: it floats in the bottom-right corner at a quarter of the screen width with 90% opacity.
+Run it again to put the window back where it was, tiled or floating.
+
+```kdl
+binds {
+    Mod+P { toggle-side-view; }
+    Mod+Shift+P { side-view-next-corner; }
+}
+```
+
+A side-view window:
+
+- stays in its corner when the window or the screen changes size; `side-view-next-corner` and `side-view-prev-corner` move it clockwise and counter-clockwise, and dragging it snaps it to the nearest corner;
+- follows you when you switch workspaces on its output;
+- is skipped by directional focus and `switch-focus-between-floating-and-tiling`, so it doesn't take your keystrokes; click it or use `focus-window-with-hints` to focus it;
+- leaves side view when it goes fullscreen or maximized, or is toggled out of floating.
+
+Size, opacity and margin are set in [`layout { side-view {} }`](./Configuration:-Layout.md#side-view).
+Side view also works in the scrolling layout.
+
 ### Seeing the containers
 
 Containers are invisible, which can make the tree hard to follow.

@@ -16,6 +16,7 @@ use super::*;
 mod animations;
 mod fullscreen;
 mod i3;
+mod side_view;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {
@@ -633,6 +634,11 @@ enum Op {
         id: Option<usize>,
         floating: bool,
     },
+    ToggleSideView {
+        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
+        id: Option<usize>,
+    },
+    SideViewCycleCorner(bool),
     FocusFloating,
     FocusTiling,
     SwitchFocusFloatingTiling,
@@ -1391,6 +1397,13 @@ impl Op {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.set_window_floating(id.as_ref(), floating);
             }
+            Op::ToggleSideView { id } => {
+                let id = id.filter(|id| layout.has_window(id));
+                layout.toggle_side_view(id.as_ref());
+            }
+            Op::SideViewCycleCorner(forward) => {
+                layout.side_view_cycle_corner(forward);
+            }
             Op::FocusFloating => {
                 layout.focus_floating();
             }
@@ -1901,6 +1914,8 @@ fn operations_dont_panic() {
         Op::ConsumeOrExpelWindowRight { id: None },
         Op::MoveWorkspaceToOutput(1),
         Op::ToggleColumnTabbedDisplay,
+        Op::ToggleSideView { id: None },
+        Op::SideViewCycleCorner(true),
     ];
 
     for third in &every_op {

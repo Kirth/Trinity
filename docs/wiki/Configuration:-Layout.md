@@ -540,6 +540,25 @@ layout {
 }
 ```
 
+### `side-view`
+
+Settings for side-view windows: small, translucent windows that float in a corner of the screen, like a picture-in-picture video.
+Toggle side view for the focused window with the `toggle-side-view` action, and move it between corners with `side-view-next-corner` and `side-view-prev-corner`.
+
+`width` is the width of a side-view window as a proportion of the working area width; the height follows the window's aspect ratio.
+`opacity` is the window opacity, overriding the `opacity` window rule.
+`gap` is the distance from the edges of the working area.
+
+```kdl
+layout {
+    side-view {
+        width 0.25
+        opacity 0.9
+        gap 16
+    }
+}
+```
+
 ### `struts`
 
 Struts shrink the area occupied by windows, similarly to layer-shell panels.

@@ -14,6 +14,7 @@ pub struct Layout {
     pub shadow: Shadow,
     pub tab_indicator: TabIndicator,
     pub insert_hint: InsertHint,
+    pub side_view: SideView,
     pub preset_column_widths: Vec<PresetSize>,
     pub default_column_width: Option<PresetSize>,
     pub preset_window_heights: Vec<PresetSize>,
@@ -38,6 +39,7 @@ impl Default for Layout {
             shadow: Shadow::default(),
             tab_indicator: TabIndicator::default(),
             insert_hint: InsertHint::default(),
+            side_view: SideView::default(),
             preset_column_widths: vec![
                 PresetSize::Proportion(1. / 3.),
                 PresetSize::Proportion(0.5),
@@ -72,6 +74,7 @@ impl MergeWith<LayoutPart> for Layout {
             shadow,
             tab_indicator,
             insert_hint,
+            side_view,
             always_center_single_column,
             empty_workspace_above_first,
             positional_workspaces,
@@ -116,6 +119,8 @@ pub struct LayoutPart {
     pub tab_indicator: Option<TabIndicatorPart>,
     #[knuffel(child)]
     pub insert_hint: Option<InsertHintPart>,
+    #[knuffel(child)]
+    pub side_view: Option<SideViewPart>,
     #[knuffel(child, unwrap(children))]
     pub preset_column_widths: Option<Vec<PresetSize>>,
     #[knuffel(child)]
@@ -142,6 +147,43 @@ pub struct LayoutPart {
     pub struts: Option<Struts>,
     #[knuffel(child)]
     pub background_color: Option<Color>,
+}
+
+/// Picture-in-picture style windows floating in a corner of the screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SideView {
+    /// Width as a proportion of the working area width.
+    pub width: f64,
+    /// Opacity of the side-view window.
+    pub opacity: f64,
+    /// Distance from the working area edges.
+    pub gap: f64,
+}
+
+impl Default for SideView {
+    fn default() -> Self {
+        Self {
+            width: 0.25,
+            opacity: 0.9,
+            gap: 16.,
+        }
+    }
+}
+
+impl MergeWith<SideViewPart> for SideView {
+    fn merge_with(&mut self, part: &SideViewPart) {
+        merge!((self, part), width, opacity, gap);
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct SideViewPart {
+    #[knuffel(child, unwrap(argument))]
+    pub width: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub opacity: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub gap: Option<FloatOrInt<0, 65535>>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

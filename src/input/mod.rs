@@ -2308,6 +2308,30 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            Action::ToggleSideView => {
+                self.niri.layout.toggle_side_view(None);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::ToggleSideViewById(id) => {
+                let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
+                let window = window.map(|(_, m)| m.window.clone());
+                if let Some(window) = window {
+                    self.niri.layout.toggle_side_view(Some(&window));
+                    // FIXME: granular
+                    self.niri.queue_redraw_all();
+                }
+            }
+            Action::SideViewNextCorner => {
+                self.niri.layout.side_view_cycle_corner(true);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::SideViewPrevCorner => {
+                self.niri.layout.side_view_cycle_corner(false);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
             Action::MoveWindowToFloating => {
                 self.niri.layout.set_window_floating(None, true);
                 // FIXME: granular

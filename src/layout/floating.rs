@@ -10,6 +10,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::scrolling::ColumnWidth;
+use super::side_view::{Anchor, Corner};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{InteractiveResize, ResolvedSize};
 use super::{
@@ -93,6 +94,11 @@ struct Data {
 
     /// Working area used for conversions.
     working_area: Rectangle<f64, Logical>,
+
+    /// Corner anchor for side-view tiles.
+    ///
+    /// When set, the position always follows the corner, rather than the stored fraction.
+    anchor: Option<Anchor>,
 }
 
 impl Data {
@@ -106,6 +112,7 @@ impl Data {
             logical_pos: Point::default(),
             size: Size::default(),
             working_area,
+            anchor: None,
         };
         rv.update(tile);
         rv.set_logical_pos(logical_pos);
@@ -135,6 +142,24 @@ impl Data {
     }
 
     fn recompute_logical_pos(&mut self) {
+        if let Some(anchor) = self.anchor {
+            let area = self.working_area;
+            let m = anchor.margin;
+            let x = if anchor.corner.is_left() {
+                area.loc.x + m
+            } else {
+                area.loc.x + area.size.w - self.size.w - m
+            };
+            let y = if anchor.corner.is_top() {
+                area.loc.y + m
+            } else {
+                area.loc.y + area.size.h - self.size.h - m
+            };
+            self.logical_pos = Point::from((x, y));
+            self.pos = Self::logical_to_size_frac_in_working_area(area, self.logical_pos);
+            return;
+        }
+
         let mut logical_pos = Self::scale_by_working_area(self.working_area, self.pos);
 
         // Make sure the window doesn't go too much off-screen. Numbers taken from Mutter.
@@ -170,11 +195,13 @@ impl Data {
 
     pub fn update<W: LayoutElement>(&mut self, tile: &Tile<W>) {
         let size = tile.tile_size();
-        if self.size == size {
+        let anchor = tile.side_view_anchor();
+        if self.size == size && self.anchor == anchor {
             return;
         }
 
         self.size = size;
+        self.anchor = anchor;
         self.recompute_logical_pos();
     }
 
@@ -524,8 +551,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
         if self.tiles.is_empty() {
             self.active_window_id = None;
         } else if Some(tile.window().id()) == self.active_window_id.as_ref() {
-            // The active tile was removed, make the topmost tile active.
-            self.active_window_id = Some(self.tiles[0].window().id().clone());
+            // The active tile was removed, make the topmost tile active, preferring tiles that
+            // aren't side-view.
+            let new_active = self
+                .tiles
+                .iter()
+                .find(|tile| !tile.is_side_view())
+                .unwrap_or(&self.tiles[0]);
+            self.active_window_id = Some(new_active.window().id().clone());
         }
 
         // Stop interactive resize.
@@ -856,7 +889,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         let center = self.data[active_idx].center();
 
         let result = zip(&self.tiles, &self.data)
-            .filter(|(tile, _)| tile.window().id() != active_id)
+            .filter(|(tile, _)| tile.window().id() != active_id && !tile.is_side_view())
             .map(|(tile, data)| (tile, distance(center, data.center())))
             .filter(|(_, dist)| *dist > 0.)
             .min_by(|(_, dist_a), (_, dist_b)| f64::total_cmp(dist_a, dist_b));
@@ -888,6 +921,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn focus_leftmost(&mut self) {
         let result = self
             .tiles_with_offsets()
+            .filter(|(tile, _)| !tile.is_side_view())
             .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
@@ -898,6 +932,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn focus_rightmost(&mut self) {
         let result = self
             .tiles_with_offsets()
+            .filter(|(tile, _)| !tile.is_side_view())
             .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.x, &pos_b.x));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
@@ -908,6 +943,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn focus_topmost(&mut self) {
         let result = self
             .tiles_with_offsets()
+            .filter(|(tile, _)| !tile.is_side_view())
             .min_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
@@ -918,6 +954,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
     pub fn focus_bottommost(&mut self) {
         let result = self
             .tiles_with_offsets()
+            .filter(|(tile, _)| !tile.is_side_view())
             .max_by(|(_, pos_a), (_, pos_b)| f64::total_cmp(&pos_a.y, &pos_b.y));
         if let Some((tile, _)) = result {
             let id = tile.window().id().clone();
@@ -926,6 +963,8 @@ impl<W: LayoutElement> FloatingSpace<W> {
     }
 
     fn move_to(&mut self, idx: usize, new_pos: Point<f64, Logical>, animate: bool) {
+        self.snap_side_view_corner(idx, new_pos);
+
         if animate {
             self.move_and_animate(idx, new_pos);
         } else {
@@ -941,8 +980,131 @@ impl<W: LayoutElement> FloatingSpace<W> {
         };
         let idx = self.idx_of(active_id).unwrap();
 
+        // Side-view tiles jump to the corner in the direction of the move.
+        if let Some(side_view) = &mut self.tiles[idx].side_view {
+            let corner = side_view.corner;
+            let left = if amount.x == 0. {
+                corner.is_left()
+            } else {
+                amount.x < 0.
+            };
+            let top = if amount.y == 0. {
+                corner.is_top()
+            } else {
+                amount.y < 0.
+            };
+            side_view.corner = match (left, top) {
+                (true, true) => Corner::TopLeft,
+                (false, true) => Corner::TopRight,
+                (false, false) => Corner::BottomRight,
+                (true, false) => Corner::BottomLeft,
+            };
+            self.update_side_view_anchor(idx, true);
+            return;
+        }
+
         let new_pos = self.data[idx].logical_pos + amount;
         self.move_to(idx, new_pos, true)
+    }
+
+    /// Snaps a side-view tile to the corner nearest to the requested position.
+    fn snap_side_view_corner(&mut self, idx: usize, new_pos: Point<f64, Logical>) {
+        let center = new_pos + self.data[idx].size.downscale(2.).to_point();
+        let center = self.logical_to_size_frac(center);
+        if let Some(side_view) = &mut self.tiles[idx].side_view {
+            side_view.corner = Corner::nearest(center);
+            self.data[idx].update(&self.tiles[idx]);
+        }
+    }
+
+    /// Updates the anchor of a tile after its side-view state changed.
+    fn update_side_view_anchor(&mut self, idx: usize, animate: bool) {
+        let tile = &mut self.tiles[idx];
+        let data = &mut self.data[idx];
+
+        let prev_pos = data.logical_pos;
+        data.update(tile);
+        let new_pos = data.logical_pos;
+
+        if animate && prev_pos != new_pos {
+            tile.animate_move_from(prev_pos - new_pos);
+        }
+    }
+
+    /// Anchors a side-view tile to a different corner.
+    pub fn set_side_view_corner(&mut self, id: &W::Id, corner: Corner) {
+        let Some(idx) = self.idx_of(id) else {
+            return;
+        };
+        let Some(side_view) = &mut self.tiles[idx].side_view else {
+            return;
+        };
+        side_view.corner = corner;
+        self.update_side_view_anchor(idx, true);
+    }
+
+    /// Returns the side-view tile that corner actions should apply to.
+    ///
+    /// This is the active window if it is a side-view window, or the topmost side-view window
+    /// otherwise.
+    pub fn side_view_target(&self) -> Option<&Tile<W>> {
+        let active = self.active_window_id.as_ref();
+        self.tiles
+            .iter()
+            .find(|tile| tile.is_side_view() && Some(tile.window().id()) == active)
+            .or_else(|| self.tiles.iter().find(|tile| tile.is_side_view()))
+    }
+
+    /// Whether there are windows that regular focus movement can land on.
+    pub fn has_focusable(&self) -> bool {
+        self.tiles.iter().any(|tile| !tile.is_side_view())
+    }
+
+    /// Whether the active window is a side-view window.
+    pub fn is_active_side_view(&self) -> bool {
+        let Some(id) = &self.active_window_id else {
+            return false;
+        };
+        self.tiles
+            .iter()
+            .any(|tile| tile.window().id() == id && tile.is_side_view())
+    }
+
+    /// Activates the topmost window that isn't a side-view window, if any.
+    pub fn activate_topmost_focusable(&mut self) -> bool {
+        let Some(tile) = self.tiles.iter().find(|tile| !tile.is_side_view()) else {
+            return false;
+        };
+        let id = tile.window().id().clone();
+        self.activate_window(&id)
+    }
+
+    /// Computes the window size for a tile entering side view.
+    ///
+    /// The tile takes the configured proportion of the working area width, and keeps the aspect
+    /// ratio of its window.
+    pub fn side_view_window_size(&self, tile: &Tile<W>) -> Size<i32, Logical> {
+        let width = self.options.layout.side_view.width.clamp(0.05, 1.);
+        let tile_width = self.working_area.size.w * width;
+        let win_width = tile.window_width_for_tile_width(tile_width).round().max(1.);
+
+        let win = tile.window();
+        let current = win.expected_size().unwrap_or_else(|| win.size());
+        let win_height = if current.w > 0 && current.h > 0 {
+            win_width * f64::from(current.h) / f64::from(current.w)
+        } else {
+            win_width * 9. / 16.
+        };
+        // Leave room for the margins.
+        let max_height = self.working_area.size.h - self.options.layout.side_view.gap * 2.;
+        let win_height = win_height.round().clamp(1., max_height.max(1.));
+
+        let min_size = win.min_size();
+        let max_size = win.max_size();
+        Size::from((
+            ensure_min_max_size(win_width as i32, min_size.w, max_size.w),
+            ensure_min_max_size(win_height as i32, min_size.h, max_size.h),
+        ))
     }
 
     pub fn move_left(&mut self) {
@@ -1376,6 +1538,11 @@ impl<W: LayoutElement> FloatingSpace<W> {
             );
 
             data.verify_invariants();
+            assert_eq!(
+                data.anchor.map(|anchor| anchor.corner),
+                tile.side_view.map(|side_view| side_view.corner),
+                "anchor must match the tile side-view state"
+            );
 
             let mut data2 = *data;
             data2.update(tile);

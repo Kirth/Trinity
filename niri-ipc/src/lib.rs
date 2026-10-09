@@ -849,6 +849,21 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
+    /// Toggle side view (picture-in-picture) for the focused window.
+    ///
+    /// A side-view window floats translucently in a corner of the screen, follows workspace
+    /// switches and is skipped by directional focus.
+    ToggleSideView {
+        /// Id of the window to toggle.
+        ///
+        /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
+    /// Move the side-view window to the next corner, clockwise.
+    SideViewNextCorner {},
+    /// Move the side-view window to the previous corner, counter-clockwise.
+    SideViewPrevCorner {},
     /// Move the focused window to the floating layout.
     MoveWindowToFloating {
         /// Id of the window to move.

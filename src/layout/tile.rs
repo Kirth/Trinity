@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
+use super::side_view::{Anchor, SideView, SideViewRestore};
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
     SizeFrac, RESIZE_ANIMATION_THRESHOLD,
@@ -74,6 +75,11 @@ pub struct Tile<W: LayoutElement> {
     /// This is generally the last position the tile had when it was floating. It can be unknown if
     /// the window starts out in the tiling layout.
     pub(super) floating_pos: Option<Point<f64, SizeFrac>>,
+
+    /// Side-view state, if this tile is a side-view window.
+    ///
+    /// Side-view tiles always live in the floating space.
+    pub(super) side_view: Option<SideView>,
 
     /// Currently selected preset width index when this tile is floating.
     pub(super) floating_preset_width_idx: Option<usize>,
@@ -202,6 +208,7 @@ impl<W: LayoutElement> Tile<W> {
             restore_to_floating: false,
             floating_window_size: None,
             floating_pos: None,
+            side_view: None,
             floating_preset_width_idx: None,
             floating_preset_height_idx: None,
             open_animation: None,
@@ -710,6 +717,34 @@ impl<W: LayoutElement> Tile<W> {
         &mut self.window
     }
 
+    pub fn is_side_view(&self) -> bool {
+        self.side_view.is_some()
+    }
+
+    pub fn side_view(&self) -> Option<&SideView> {
+        self.side_view.as_ref()
+    }
+
+    /// Takes the tile out of side view, restoring its previous floating state.
+    ///
+    /// Returns the restore state, if the tile was in side view.
+    pub fn leave_side_view(&mut self) -> Option<SideViewRestore> {
+        let restore = self.side_view.take()?.restore;
+        self.floating_pos = restore.floating_pos;
+        self.floating_window_size = restore.floating_window_size;
+        self.floating_preset_width_idx = restore.floating_preset_width_idx;
+        self.floating_preset_height_idx = restore.floating_preset_height_idx;
+        Some(restore)
+    }
+
+    /// Where the floating space should anchor this tile, if it is a side-view tile.
+    pub fn side_view_anchor(&self) -> Option<Anchor> {
+        self.side_view.map(|side_view| Anchor {
+            corner: side_view.corner,
+            margin: self.options.layout.side_view.gap,
+        })
+    }
+
     pub fn sizing_mode(&self) -> SizingMode {
         self.sizing_mode
     }
@@ -1076,7 +1111,11 @@ impl<W: LayoutElement> Tile<W> {
         let win_alpha = if self.window.is_ignoring_opacity_window_rule() {
             1.
         } else {
-            let alpha = self.window.rules().opacity.unwrap_or(1.).clamp(0., 1.);
+            let alpha = match self.side_view {
+                Some(_) => self.options.layout.side_view.opacity as f32,
+                None => self.window.rules().opacity.unwrap_or(1.),
+            };
+            let alpha = alpha.clamp(0., 1.);
 
             // Interpolate towards alpha = 1. at fullscreen.
             let p = fullscreen_progress as f32;

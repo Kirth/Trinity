@@ -22,6 +22,7 @@ use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
 };
 use super::shadow::Shadow;
+use super::side_view::{Corner, SideView, SideViewRestore};
 use super::tile::{Tile, TileRenderSnapshot};
 use super::tiling::{
     ContainerLayout, Direction, LayoutCommand, Orientation, SplitCommand, TilingSpace,
@@ -836,6 +837,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.enter_output_for_window(tile.window());
         tile.restore_to_floating = is_floating;
 
+        // Side-view windows only exist in the floating space.
+        if !(is_floating && tile.window().pending_sizing_mode().is_normal()) {
+            tile.leave_side_view();
+        }
+
         match target {
             WorkspaceAddWindowTarget::Auto => {
                 // Don't steal focus from an active fullscreen window.
@@ -982,12 +988,13 @@ impl<W: LayoutElement> Workspace<W> {
 
     fn update_focus_floating_tiling_after_removing(&mut self, removed_from_floating: bool) {
         if removed_from_floating {
-            if self.floating.is_empty() {
+            // Side-view windows don't keep the focus on floating by themselves.
+            if !self.floating.has_focusable() {
                 self.floating_is_active = FloatingActive::No;
             }
         } else {
             // Tiled should remain focused if both are empty.
-            if self.tiled_is_empty() && !self.floating.is_empty() {
+            if self.tiled_is_empty() && self.floating.has_focusable() {
                 self.floating_is_active = FloatingActive::Yes;
             }
         }
@@ -1152,9 +1159,24 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Moves focus in the floating space, leaving side-view windows for the tiled layout.
+    fn focus_floating_directional(&mut self, focus: fn(&mut FloatingSpace<W>) -> bool) -> bool {
+        let from_side_view = self.floating.is_active_side_view();
+        if focus(&mut self.floating) {
+            return true;
+        }
+
+        if from_side_view && !self.tiled_is_empty() {
+            self.floating_is_active = FloatingActive::No;
+            return true;
+        }
+
+        false
+    }
+
     pub fn focus_left(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_left()
+            self.focus_floating_directional(FloatingSpace::focus_left)
         } else if let Some(tiling) = &mut self.tiling {
             tiling.focus(Direction::Left)
         } else {
@@ -1164,7 +1186,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_right(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_right()
+            self.focus_floating_directional(FloatingSpace::focus_right)
         } else if let Some(tiling) = &mut self.tiling {
             tiling.focus(Direction::Right)
         } else {
@@ -1216,7 +1238,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_down(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_down()
+            self.focus_floating_directional(FloatingSpace::focus_down)
         } else if let Some(tiling) = &mut self.tiling {
             tiling.focus(Direction::Down)
         } else {
@@ -1226,7 +1248,7 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn focus_up(&mut self) -> bool {
         if self.floating_is_active.get() {
-            self.floating.focus_up()
+            self.focus_floating_directional(FloatingSpace::focus_up)
         } else if let Some(tiling) = &mut self.tiling {
             tiling.focus(Direction::Up)
         } else {
@@ -1585,6 +1607,10 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
+        if is_fullscreen {
+            self.exit_side_view(window);
+        }
+
         if self.tiling.is_some() {
             self.set_tiling_sizing(window, is_fullscreen, SizingMode::Fullscreen);
             return;
@@ -1655,6 +1681,10 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn set_maximized(&mut self, window: &W::Id, maximize: bool) {
+        if maximize {
+            self.exit_side_view(window);
+        }
+
         if self.tiling.is_some() {
             self.set_tiling_sizing(window, maximize, SizingMode::Maximized);
             return;
@@ -1773,6 +1803,12 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         };
 
+        // Toggling floating on a side-view window takes it out of side view instead.
+        if self.is_side_view(&id) {
+            self.toggle_side_view(Some(&id));
+            return;
+        }
+
         let (_, render_pos, _) = self
             .tiles_with_render_positions()
             .find(|(tile, _, _)| *tile.window().id() == id)
@@ -1825,6 +1861,143 @@ impl<W: LayoutElement> Workspace<W> {
         tile.animate_move_from(render_pos - new_render_pos);
     }
 
+    pub fn is_side_view(&self, id: &W::Id) -> bool {
+        self.floating
+            .tiles()
+            .any(|tile| tile.window().id() == id && tile.is_side_view())
+    }
+
+    fn exit_side_view(&mut self, id: &W::Id) {
+        if self.is_side_view(id) {
+            self.toggle_side_view(Some(id));
+        }
+    }
+
+    /// Puts a window into side view, or takes it out of side view.
+    ///
+    /// A side-view window floats in a corner of the working area at a reduced size and opacity.
+    /// Leaving side view puts the window back where it came from: tiled with its previous width,
+    /// or floating with its previous position and size.
+    pub fn toggle_side_view(&mut self, id: Option<&W::Id>) {
+        let active_id = self.active_window().map(|win| win.id().clone());
+        let target_is_active = id.is_none_or(|id| Some(id) == active_id.as_ref());
+        let Some(id) = id.cloned().or(active_id) else {
+            return;
+        };
+
+        let (_, render_pos, _) = self
+            .tiles_with_render_positions()
+            .find(|(tile, _, _)| *tile.window().id() == id)
+            .unwrap();
+
+        if self.is_side_view(&id) {
+            let mut removed = self.floating.remove_tile(&id);
+            removed.tile.stop_move_animations();
+
+            let restore = removed.tile.leave_side_view().unwrap();
+
+            if let Some((width, is_full_width)) = restore.tiled {
+                self.tiled_add_tile(removed.tile, target_is_active, width, is_full_width, None);
+                if target_is_active {
+                    self.floating_is_active = FloatingActive::No;
+                }
+            } else {
+                self.floating.add_tile(removed.tile, target_is_active);
+                if target_is_active || self.tiled_is_empty() {
+                    self.floating_is_active = FloatingActive::Yes;
+                }
+            }
+        } else {
+            let was_floating = self.floating.has_window(&id);
+            let mut removed = if was_floating {
+                self.floating.remove_tile(&id)
+            } else {
+                self.tiled_remove_tile(&id, Transaction::new())
+            };
+            removed.tile.stop_move_animations();
+
+            let tile = &mut removed.tile;
+            let restore = SideViewRestore {
+                tiled: (!was_floating).then_some((removed.width, removed.is_full_width)),
+                floating_pos: tile.floating_pos,
+                floating_window_size: tile.floating_window_size,
+                floating_preset_width_idx: tile.floating_preset_width_idx,
+                floating_preset_height_idx: tile.floating_preset_height_idx,
+            };
+            tile.floating_window_size = Some(self.floating.side_view_window_size(tile));
+            tile.floating_preset_width_idx = None;
+            tile.floating_preset_height_idx = None;
+            tile.side_view = Some(SideView {
+                corner: Corner::default(),
+                restore,
+            });
+
+            // Side-view windows don't take the focus.
+            self.floating.add_tile(removed.tile, false);
+            self.focus_away_from_side_view();
+        }
+
+        let (tile, new_render_pos) = self
+            .tiles_with_render_positions_mut(false)
+            .find(|(tile, _)| *tile.window().id() == id)
+            .unwrap();
+
+        tile.animate_move_from(render_pos - new_render_pos);
+    }
+
+    /// Anchors the targeted side-view window to the next or previous corner.
+    ///
+    /// Returns `false` if there's no side-view window on this workspace.
+    pub fn side_view_cycle_corner(&mut self, forward: bool) -> bool {
+        let Some(tile) = self.floating.side_view_target() else {
+            return false;
+        };
+        let id = tile.window().id().clone();
+        let corner = tile.side_view().unwrap().corner;
+        let corner = if forward {
+            corner.next()
+        } else {
+            corner.prev()
+        };
+        self.floating.set_side_view_corner(&id, corner);
+        true
+    }
+
+    /// Moves the focus off a side-view window, if it has it.
+    fn focus_away_from_side_view(&mut self) {
+        if !self.floating.is_active_side_view() {
+            return;
+        }
+
+        if self.floating.activate_topmost_focusable() {
+            return;
+        }
+
+        if self.floating_is_active.get() && !self.tiled_is_empty() {
+            self.floating_is_active = FloatingActive::No;
+        }
+    }
+
+    /// Adds a side-view tile carried over from another workspace, without focusing it.
+    pub fn add_side_view_tile(&mut self, tile: Tile<W>) {
+        self.enter_output_for_window(tile.window());
+        self.floating.add_tile(tile, false);
+        self.focus_away_from_side_view();
+    }
+
+    /// Removes all side-view tiles from this workspace.
+    pub fn take_side_view_tiles(&mut self) -> Vec<Tile<W>> {
+        let ids: Vec<_> = self
+            .floating
+            .tiles()
+            .filter(|tile| tile.is_side_view())
+            .map(|tile| tile.window().id().clone())
+            .collect();
+        ids.iter()
+            .map(|id| self.remove_tile(id, Transaction::new()).tile)
+            .collect()
+    }
+
     pub fn set_window_floating(&mut self, id: Option<&W::Id>, floating: bool) {
         if id.map_or(self.floating_is_active.get(), |id| {
             self.floating.has_window(id)
@@ -1849,19 +2022,23 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn switch_focus_floating_tiling(&mut self) {
-        if self.floating.is_empty() {
-            // If floating is empty, keep focus on scrolling.
-            return;
-        } else if self.tiled_is_empty() {
-            // If floating isn't empty but scrolling is, keep focus on floating.
-            return;
-        }
-
-        self.floating_is_active = if self.floating_is_active.get() {
-            FloatingActive::No
+        if self.floating_is_active.get() {
+            if self.tiled_is_empty() {
+                // If floating isn't empty but scrolling is, keep focus on floating.
+                return;
+            }
+            self.floating_is_active = FloatingActive::No;
         } else {
-            FloatingActive::Yes
-        };
+            if !self.floating.has_focusable() {
+                // If floating is empty (side-view windows aside), keep focus on scrolling.
+                return;
+            }
+            // Focus never switches to side-view windows.
+            if self.floating.is_active_side_view() {
+                self.floating.activate_topmost_focusable();
+            }
+            self.floating_is_active = FloatingActive::Yes;
+        }
     }
 
     pub fn move_floating_window(
@@ -2521,6 +2698,15 @@ impl<W: LayoutElement> Workspace<W> {
         assert!(Rc::ptr_eq(&self.options, self.floating.options()));
         self.floating.verify_invariants();
 
+        let tiled_side_view = match &self.tiling {
+            Some(tiling) => tiling.tiles().any(Tile::is_side_view),
+            None => self.scrolling.tiles().any(Tile::is_side_view),
+        };
+        assert!(
+            !tiled_side_view,
+            "side-view tiles must live in the floating space"
+        );
+
         assert_eq!(
             self.tiling.is_some(),
             self.options.is_i3(),
@@ -2543,7 +2729,7 @@ impl<W: LayoutElement> Workspace<W> {
                 !self.floating_is_active.get(),
                 "when floating is empty it must never be active"
             );
-        } else if self.tiled_is_empty() {
+        } else if self.tiled_is_empty() && self.floating.has_focusable() {
             assert!(
                 self.floating_is_active.get(),
                 "when tiled is empty but floating isn't, floating should be active"
