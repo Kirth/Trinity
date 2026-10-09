@@ -405,6 +405,8 @@ pub struct Options {
     pub disable_resize_throttling: bool,
     pub disable_transactions: bool,
     pub deactivate_unfocused_windows: bool,
+    /// Draw the outlines of i3 containers.
+    pub debug_containers: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -673,6 +675,7 @@ impl Options {
             disable_resize_throttling: config.debug.disable_resize_throttling,
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
+            debug_containers: config.debug.show_i3_containers,
         }
         .with_i3_overrides()
     }

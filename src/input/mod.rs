@@ -1660,6 +1660,14 @@ impl State {
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
+            Action::ToggleDebugI3Containers => {
+                let config = self.niri.config.clone();
+                let mut config = config.borrow_mut();
+                config.debug.show_i3_containers = !config.debug.show_i3_containers;
+                self.niri.layout.update_config(&config);
+                drop(config);
+                self.niri.queue_redraw_all();
+            }
             Action::SwitchPresetColumnWidth => {
                 self.niri.layout.toggle_width(true);
             }

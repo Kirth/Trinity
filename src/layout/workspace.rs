@@ -2459,6 +2459,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.layout_config.as_ref()
     }
 
+    #[cfg(test)]
+    pub fn tiling(&self) -> Option<&TilingSpace<W>> {
+        self.tiling.as_ref()
+    }
+
     pub fn scrolling(&self) -> &ScrollingSpace<W> {
         &self.scrolling
     }

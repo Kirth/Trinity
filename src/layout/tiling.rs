@@ -9,6 +9,7 @@ use std::rc::Rc;
 use niri_config::utils::MergeWith as _;
 use niri_config::TabIndicatorPosition;
 use niri_ipc::{SizeChange, WindowLayout};
+use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
@@ -21,6 +22,7 @@ use crate::animation::{Animation, Clock};
 use crate::layout::RenderLayer;
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
@@ -154,6 +156,7 @@ niri_render_elements! {
         Tile = TileRenderElement<R>,
         ClosingWindow = ClosingWindowRenderElement,
         TabIndicator = TabIndicatorRenderElement,
+        SolidColor = SolidColorRenderElement,
     }
 }
 
@@ -233,6 +236,9 @@ struct Container<W: LayoutElement> {
 
     /// Tabs for the tabbed and stacked layouts.
     tab_indicator: TabIndicator,
+
+    /// Edges of the debug outline, with their positions, when container debugging is on.
+    debug_outline: Vec<(SolidColorBuffer, Point<f64, Logical>)>,
 }
 
 impl<W: LayoutElement> Node<W> {
@@ -282,6 +288,7 @@ impl<W: LayoutElement> Container<W> {
             focused: 0,
             rect: Rectangle::default(),
             tab_indicator: TabIndicator::new(options.layout.tab_indicator),
+            debug_outline: Vec::new(),
         };
         rv.update_tab_indicator_config(options);
         rv
@@ -1556,7 +1563,98 @@ impl<W: LayoutElement> TilingSpace<W> {
         if layer.is_normal() {
             let scale = self.scale;
             update_tab_render_elements(&mut self.root, is_active, view_rect, scale, true);
+            self.update_debug_outlines();
         }
+    }
+
+    /// Updates the debug outlines of containers: coloured by layout, nested ones inset, and the
+    /// focused container in white.
+    fn update_debug_outlines(&mut self) {
+        // The focused container is the focused node after `focus parent`, otherwise the parent
+        // of the focused window.
+        let focused = self
+            .focused_path()
+            .map(|path| match self.root.node_at(&path) {
+                Node::Container(_) => path,
+                Node::Leaf(_) => path[..path.len() - 1].to_vec(),
+            });
+        let enabled = self.options.debug_containers && !self.is_empty();
+
+        fn walk<W: LayoutElement>(
+            container: &mut Container<W>,
+            path: &mut Vec<usize>,
+            visible: bool,
+            enabled: bool,
+            focused: Option<&[usize]>,
+        ) {
+            if enabled && visible {
+                let is_focused = focused == Some(path.as_slice());
+                let (width, color) = if is_focused {
+                    (4., [1., 1., 1., 1.])
+                } else {
+                    let rgb = match container.layout {
+                        ContainerLayout::SplitH => [0.3, 0.55, 1.],
+                        ContainerLayout::SplitV => [0.3, 0.9, 0.4],
+                        ContainerLayout::Tabbed => [1., 0.6, 0.2],
+                        ContainerLayout::Stacked => [0.75, 0.4, 1.],
+                    };
+                    // Premultiplied alpha.
+                    let a = 0.8;
+                    (2., [rgb[0] * a, rgb[1] * a, rgb[2] * a, a])
+                };
+
+                // Inset nested containers so their outlines don't cover their parents'.
+                let inset = path.len() as f64 * 3.;
+                let mut rect = container.rect;
+                rect.loc += Point::from((inset, inset));
+                rect.size.w = f64::max(rect.size.w - inset * 2., width * 2.);
+                rect.size.h = f64::max(rect.size.h - inset * 2., width * 2.);
+
+                let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                let edges = [
+                    (Point::from((x, y)), Size::from((w, width))),
+                    (Point::from((x, y + h - width)), Size::from((w, width))),
+                    (Point::from((x, y)), Size::from((width, h))),
+                    (Point::from((x + w - width, y)), Size::from((width, h))),
+                ];
+                container.debug_outline.resize_with(edges.len(), || {
+                    (SolidColorBuffer::default(), Point::default())
+                });
+                for ((buffer, pos), (loc, size)) in container.debug_outline.iter_mut().zip(edges) {
+                    buffer.update(size, color);
+                    *pos = loc;
+                }
+            } else {
+                container.debug_outline.clear();
+            }
+
+            let is_tabbed = !container.layout.is_split();
+            let focused_child = container.focused;
+            for (idx, child) in container.children.iter_mut().enumerate() {
+                if let Node::Container(inner) = child {
+                    path.push(idx);
+                    let visible = visible && (!is_tabbed || idx == focused_child);
+                    walk(inner, path, visible, enabled, focused);
+                    path.pop();
+                }
+            }
+        }
+
+        walk(
+            &mut self.root,
+            &mut Vec::new(),
+            true,
+            enabled,
+            focused.as_deref(),
+        );
+    }
+
+    /// Number of debug outline edges currently drawn.
+    #[cfg(test)]
+    pub fn debug_outline_edges(&self) -> usize {
+        let mut count = 0;
+        for_each_container(&self.root, &mut |c| count += c.debug_outline.len());
+        count
     }
 
     pub fn render<R: NiriRenderer>(
@@ -1568,6 +1666,18 @@ impl<W: LayoutElement> TilingSpace<W> {
         push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
+
+        // Draw the debug outlines on top of everything.
+        if layer.is_normal() {
+            for_each_container(&self.root, &mut |container| {
+                for (buffer, pos) in &container.debug_outline {
+                    let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+                    let elem =
+                        SolidColorRenderElement::from_buffer(buffer, pos, 1., Kind::Unspecified);
+                    push(elem.into());
+                }
+            });
+        }
 
         // Draw the closing windows on top of the other windows.
         if layer.is_normal() {

@@ -35,6 +35,7 @@ debug {
     skip-cursor-only-updates-during-vrr
     deactivate-unfocused-windows
     disable-10bit-output
+    show-i3-containers
 }
 
 binds {
@@ -358,6 +359,22 @@ debug {
 }
 ```
 
+### `show-i3-containers`
+
+<sup>Since: next release</sup>
+
+Draws the outlines of the containers in [i3 mode](./Configuration:-i3-Mode.md).
+They are coloured by layout: blue for `splith`, green for `splitv`, orange for `tabbed` and purple for `stacking`.
+Nested containers are drawn slightly inset, and the focused container is drawn in white.
+
+```kdl
+debug {
+    show-i3-containers
+}
+```
+
+You can also toggle it with the `toggle-debug-i3-containers` action.
+
 ### Key Bindings
 
 These are not debug options, but rather key bindings.
@@ -385,6 +402,18 @@ Useful to check how Wayland surfaces and internal render elements mark their par
 ```kdl
 binds {
     Mod+Shift+Ctrl+O { debug-toggle-opaque-regions; }
+}
+```
+
+#### `toggle-debug-i3-containers`
+
+<sup>Since: next release</sup>
+
+Toggles the [`show-i3-containers`](#show-i3-containers) outlines.
+
+```kdl
+binds {
+    Mod+Shift+Ctrl+I { toggle-debug-i3-containers; }
 }
 ```
 

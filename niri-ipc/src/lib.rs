@@ -470,6 +470,8 @@ pub enum Action {
     FocusParent {},
     /// Focus the child of the focused container (i3 layout mode).
     FocusChild {},
+    /// Toggle the debug outlines of i3 containers.
+    ToggleDebugI3Containers {},
     /// Center the focused column on the screen.
     CenterColumn {},
     /// Center a window on the screen.

@@ -122,6 +122,17 @@ binds {
 }
 ```
 
+### Seeing the containers
+
+Containers are invisible, which can make the tree hard to follow.
+To see them, turn on the debug outlines, either in the config with [`show-i3-containers`](./Configuration:-Debug-Options.md#show-i3-containers), or with a bind:
+
+```kdl
+binds {
+    Mod+Shift+Ctrl+I { toggle-debug-i3-containers; }
+}
+```
+
 ### Differences from i3
 
 - Tabs show as colored bars without window titles.

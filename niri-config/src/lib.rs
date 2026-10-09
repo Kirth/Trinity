@@ -692,6 +692,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_debug_i3_containers() {
+        let parsed = do_parse(
+            r#"
+            debug {
+                show-i3-containers
+            }
+            binds {
+                Mod+D { toggle-debug-i3-containers; }
+            }
+            "#,
+        );
+        assert!(parsed.debug.show_i3_containers);
+        assert_eq!(parsed.binds.0[0].action, Action::ToggleDebugI3Containers);
+    }
+
+    #[test]
     fn parse_on_xdg_activate() {
         let parsed = do_parse(
             r#"
@@ -2353,6 +2369,7 @@ mod tests {
                 deactivate_unfocused_windows: false,
                 skip_cursor_only_updates_during_vrr: false,
                 disable_10bit_output: false,
+                show_i3_containers: false,
             },
             workspaces: [
                 Workspace {

@@ -510,3 +510,35 @@ fn switching_to_i3_keeps_columns_together() {
     assert!(pos[&1].0.x < pos[&3].0.x);
     assert_eq!(focused(&layout), 3);
 }
+
+fn debug_outline_edges(layout: &mut Layout<TestWindow>) -> usize {
+    layout.update_render_elements(None);
+    layout
+        .active_workspace()
+        .unwrap()
+        .tiling()
+        .unwrap()
+        .debug_outline_edges()
+}
+
+#[test]
+fn debug_outlines_show_containers() {
+    let ops = [
+        add_window(1),
+        add_window(2),
+        Op::Split(SplitCommand::Vertical),
+        add_window(3),
+    ];
+
+    // Off by default.
+    let mut layout = tiling_layout(ops.clone());
+    assert_eq!(debug_outline_edges(&mut layout), 0);
+
+    // The root and the vertical container each get four edges.
+    let mut options = i3_options();
+    options.debug_containers = true;
+    let mut all = vec![Op::AddOutput(1)];
+    all.extend(ops);
+    let mut layout = check_ops_with_options(options, all);
+    assert_eq!(debug_outline_edges(&mut layout), 8);
+}
