@@ -208,6 +208,12 @@ struct Leaf<W: LayoutElement> {
 
     /// Requested sizing mode of the tile.
     sizing: SizingMode,
+
+    /// Size and sizing mode last requested from the window.
+    ///
+    /// Only windows whose request changes take part in a resize transaction. A window that keeps
+    /// its size doesn't send a configure, so it would hold the transaction until its deadline.
+    requested: Option<(Size<f64, Logical>, SizingMode)>,
 }
 
 #[derive(Debug)]
@@ -527,8 +533,11 @@ fn layout_node<W: LayoutElement>(
             leaf.is_laid_out = true;
             leaf.visible = visible || !leaf.sizing.is_normal();
 
-            // Hidden tabs don't participate in the transaction.
-            let transaction = visible.then(|| ctx.transaction.clone());
+            // Hidden tabs and windows that keep their size don't participate in the transaction.
+            let request = (size, leaf.sizing);
+            let changed = leaf.requested != Some(request);
+            leaf.requested = Some(request);
+            let transaction = (visible && changed).then(|| ctx.transaction.clone());
             match leaf.sizing {
                 SizingMode::Normal => leaf.tile.request_tile_size(size, ctx.animate, transaction),
                 SizingMode::Maximized => {
@@ -579,6 +588,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) {
         for leaf in self.root.leaves_mut() {
             leaf.tile.update_config(view_size, scale, options.clone());
+            // Borders or scale may have changed the window size for the same tile size.
+            leaf.requested = None;
         }
         update_containers_config(&mut self.root, &options);
 
@@ -751,6 +762,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             pos: Point::default(),
             size: Size::default(),
             is_laid_out: false,
+            requested: None,
             visible: true,
             sizing,
         }

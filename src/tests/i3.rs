@@ -86,3 +86,66 @@ fn split_vertical_stacks_new_window() {
         @"size: 936 × 516, bounds: 1888 × 1048, states: []"
     );
 }
+
+fn format_window_sizes(f: &mut Fixture) -> String {
+    let mut sizes: Vec<_> = f
+        .niri()
+        .layout
+        .windows()
+        .map(|(_, mapped)| {
+            let size = crate::layout::LayoutElement::size(mapped);
+            format!("{} × {}", size.w, size.h)
+        })
+        .collect();
+    sizes.sort();
+    sizes.join("\n")
+}
+
+#[test]
+fn closing_doesnt_wait_for_unchanged_windows() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // 1 on the left, 2 and 3 stacked on the right.
+    let first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    f.niri()
+        .layout
+        .split(crate::layout::tiling::SplitCommand::Vertical);
+    let third = open_window(&mut f, id);
+
+    // Commit the sizes from opening 3.
+    for surface in [&first, &second, &third] {
+        let window = f.client(id).window(surface);
+        let (w, h) = window.configures_received.last().unwrap().1.size;
+        window.set_size(w as u16, h as u16);
+        window.ack_last_and_commit();
+    }
+    f.double_roundtrip(id);
+    let _ = f.client(id).window(&first).format_recent_configures();
+    let _ = f.client(id).window(&second).format_recent_configures();
+
+    // Close 3: 2 grows back to the full height, 1 keeps its size.
+    let window = f.client(id).window(&third);
+    window.attach_null();
+    window.commit();
+    f.double_roundtrip(id);
+
+    assert_snapshot!(f.client(id).window(&first).format_recent_configures(), @"");
+    let window = f.client(id).window(&second);
+    assert_snapshot!(
+        window.format_recent_configures(),
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
+    );
+
+    // 2 commits its new size, which must apply right away, since 1 isn't part of the resize.
+    window.set_size(936, 1048);
+    window.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    assert_snapshot!(format_window_sizes(&mut f), @r"
+    936 × 1048
+    936 × 1048
+    ");
+}
