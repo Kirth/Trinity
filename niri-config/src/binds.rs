@@ -219,6 +219,13 @@ pub enum Action {
     ToggleDebugI3Containers,
     FocusWindowWithHints,
     ResizeMode,
+    MoveWindowToLimbo,
+    #[knuffel(skip)]
+    MoveWindowToLimboById(u64),
+    PullFromLimbo,
+    ToggleLimboWindow,
+    #[knuffel(skip)]
+    ToggleLimboWindowById(u64),
     CenterColumn,
     CenterWindow,
     #[knuffel(skip)]
@@ -527,6 +534,11 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::ToggleDebugI3Containers {} => Self::ToggleDebugI3Containers,
             niri_ipc::Action::FocusWindowWithHints {} => Self::FocusWindowWithHints,
             niri_ipc::Action::ResizeMode {} => Self::ResizeMode,
+            niri_ipc::Action::MoveWindowToLimbo { id: None } => Self::MoveWindowToLimbo,
+            niri_ipc::Action::MoveWindowToLimbo { id: Some(id) } => Self::MoveWindowToLimboById(id),
+            niri_ipc::Action::PullFromLimbo {} => Self::PullFromLimbo,
+            niri_ipc::Action::ToggleLimboWindow { id: None } => Self::ToggleLimboWindow,
+            niri_ipc::Action::ToggleLimboWindow { id: Some(id) } => Self::ToggleLimboWindowById(id),
             niri_ipc::Action::CenterColumn {} => Self::CenterColumn,
             niri_ipc::Action::CenterWindow { id: None } => Self::CenterWindow,
             niri_ipc::Action::CenterWindow { id: Some(id) } => Self::CenterWindowById(id),

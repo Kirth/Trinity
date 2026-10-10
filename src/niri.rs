@@ -358,6 +358,8 @@ pub struct Niri {
     pub edge_move_right: Option<(Duration, MappedId, u8)>,
     /// The last window poofed away to limbo, to put it back with move-left.
     pub poof_undo: Option<PoofUndo>,
+    /// The window last brought out of limbo, which toggle-limbo-window sends back.
+    pub limbo_shown: Option<Window>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
@@ -1151,7 +1153,21 @@ impl State {
             }
         }
         windows.sort_by(|(_, a), (_, b)| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
-        let ids: Vec<_> = windows.into_iter().map(|(id, _)| id).collect();
+        let mut ids: Vec<_> = windows.into_iter().map(|(id, _)| id).collect();
+
+        // Then the windows in the limbo drawer, which slides out while the hints are shown.
+        let in_drawer: Vec<_> = niri
+            .global_space
+            .outputs()
+            .flat_map(|output| niri.ace_hint_drawer_cards(output))
+            .map(|(id, _)| id)
+            .collect();
+        ids.extend(
+            niri.layout
+                .limbo_windows()
+                .map(|mapped| mapped.id())
+                .filter(|id| in_drawer.contains(id)),
+        );
 
         match ids.as_slice() {
             [] => (),
@@ -2805,6 +2821,7 @@ impl Niri {
             in_key_repeat: false,
             edge_move_right: None,
             poof_undo: None,
+            limbo_shown: None,
             presentation_state,
             security_context_state,
             gamma_control_manager_state,
@@ -4352,6 +4369,7 @@ impl Niri {
         self.poof.advance_animations(self.clock.now());
         let limbo: Vec<_> = self.layout.limbo_windows().map(|m| m.id()).collect();
         self.drawer.sync(&limbo);
+        self.drawer.set_popped(self.ace_hints.is_open());
         self.drawer.advance_animations(self.clock.now());
 
         for state in self.output_state.values_mut() {
@@ -4595,6 +4613,7 @@ impl Niri {
                 output_size(output),
                 &drawer_windows,
                 self.drawer_placement(output),
+                self.config.borrow().layout.border.urgent_color,
                 output.current_scale().fractional_scale(),
                 &mut |elem| push(elem.into()),
             );
@@ -4604,10 +4623,13 @@ impl Niri {
         if self.ace_hints.is_open() {
             let scale = output.current_scale().fractional_scale();
             let windows = self.ace_hint_windows(output);
-            self.ace_hints
-                .render(ctx.renderer, scale, windows.into_iter(), &mut |elem| {
-                    push(elem.into())
-                });
+            let cards = self.ace_hint_drawer_cards(output);
+            self.ace_hints.render(
+                ctx.renderer,
+                scale,
+                windows.into_iter().chain(cards),
+                &mut |elem| push(elem.into()),
+            );
 
             // Below the hints, faint copies of the windows hidden behind a fullscreen window.
             for (tile, loc) in self.ace_hint_ghosts(output) {
@@ -6638,6 +6660,24 @@ impl Niri {
         rv
     }
 
+    /// Cards in the limbo drawer on this output with their top-left corner, in output-local
+    /// logical coordinates.
+    pub fn ace_hint_drawer_cards(&self, output: &Output) -> Vec<(MappedId, Point<f64, Logical>)> {
+        let items: Vec<_> = self
+            .drawer_windows(output)
+            .iter()
+            .map(|mapped| crate::ui::drawer::Item::new(mapped))
+            .collect();
+        if items.is_empty() {
+            return Vec::new();
+        }
+        self.drawer
+            .slots(output_size(output), &items, self.drawer_placement(output))
+            .into_iter()
+            .map(|slot| (slot.id, slot.card.loc))
+            .collect()
+    }
+
     /// Windows in limbo, shown in the drawer on this output, newest first.
     ///
     /// The drawer shows at the right edge of outputs with nothing to their right, in i3 mode,
@@ -6662,6 +6702,17 @@ impl Niri {
             return Vec::new();
         }
         self.layout.limbo_windows().collect()
+    }
+
+    /// Whether only some of the limbo drawer's cards fit on this output.
+    pub fn drawer_overflows(&self, output: &Output) -> bool {
+        let items: Vec<_> = self
+            .drawer_windows(output)
+            .iter()
+            .map(|mapped| crate::ui::drawer::Item::new(mapped))
+            .collect();
+        self.drawer
+            .overflows(output_size(output), &items, self.drawer_placement(output))
     }
 
     /// Where the limbo drawer goes on this output.
@@ -6695,7 +6746,7 @@ impl Niri {
         }
         let items: Vec<_> = windows
             .iter()
-            .map(|mapped| (mapped.id(), crate::ui::drawer::window_size(mapped)))
+            .map(|mapped| crate::ui::drawer::Item::new(mapped))
             .collect();
         self.drawer.window_under(
             output_size(output),

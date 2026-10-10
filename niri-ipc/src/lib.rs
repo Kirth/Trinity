@@ -476,6 +476,32 @@ pub enum Action {
     FocusWindowWithHints {},
     /// Enter resize mode: arrows and h/j/k/l resize the focused window, Escape or Return leave.
     ResizeMode {},
+    /// Send a window to limbo, the hidden place for windows out of the way (i3 layout mode).
+    #[cfg_attr(feature = "clap", clap(about = "Send the focused window to limbo"))]
+    MoveWindowToLimbo {
+        /// Id of the window to send to limbo.
+        ///
+        /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
+    /// Bring the newest window in limbo back next to the focused window (i3 layout mode).
+    PullFromLimbo {},
+    /// Show or hide a window from limbo, like i3's scratchpad (i3 layout mode).
+    ///
+    /// Without an id, sends the focused window back to limbo if it was the last one brought out
+    /// of it, and otherwise brings out the newest window in limbo.
+    #[cfg_attr(
+        feature = "clap",
+        clap(about = "Show the newest window in limbo, or hide the one last shown")
+    )]
+    ToggleLimboWindow {
+        /// Id of the window to toggle: brought out if it's in limbo, sent there otherwise.
+        ///
+        /// If `None`, toggles like i3's scratchpad show.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+    },
     /// Center the focused column on the screen.
     CenterColumn {},
     /// Center a window on the screen.

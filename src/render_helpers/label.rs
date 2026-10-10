@@ -13,8 +13,10 @@ use smithay::utils::Transform;
 use crate::render_helpers::memory::MemoryBuffer;
 use crate::utils::to_physical_precise_round;
 
-/// Width of the white outline around a pill, in logical pixels.
+/// Width of the outline around a pill, in logical pixels.
 const OUTLINE: f64 = 2.;
+/// How much darker the outline is than the fill: its colour is the fill's times this.
+const OUTLINE_SHADE: f64 = 0.6;
 
 /// Rendered labels by key, so each one is drawn only once.
 pub struct LabelCache<K> {
@@ -54,7 +56,7 @@ impl<K> std::fmt::Debug for LabelCache<K> {
     }
 }
 
-/// Draws white text in a filled pill with a white outline: a circle for short text.
+/// Draws white text in a filled pill with a slightly darker outline: a circle for short text.
 ///
 /// `fill` is straight (not premultiplied) RGBA, and `radius` is in logical pixels.
 pub fn render_pill(
@@ -95,7 +97,8 @@ pub fn render_pill(
     let [red, green, blue, alpha] = fill;
     cr.set_source_rgba(red, green, blue, alpha);
     cr.fill_preserve()?;
-    cr.set_source_rgb(1., 1., 1.);
+    let shade = |c: f64| c * OUTLINE_SHADE;
+    cr.set_source_rgba(shade(red), shade(green), shade(blue), alpha);
     cr.set_line_width(line);
     cr.stroke()?;
 

@@ -748,6 +748,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_limbo_actions() {
+        let parsed = do_parse(
+            r#"
+            binds {
+                Mod+Shift+Minus { move-window-to-limbo; }
+                Mod+Ctrl+Minus { pull-from-limbo; }
+                Mod+Minus { toggle-limbo-window; }
+            }
+            "#,
+        );
+        let actions: Vec<_> = parsed.binds.0.iter().map(|bind| &bind.action).collect();
+        assert_eq!(
+            actions,
+            [
+                &Action::MoveWindowToLimbo,
+                &Action::PullFromLimbo,
+                &Action::ToggleLimboWindow
+            ]
+        );
+    }
+
+    #[test]
     fn parse_pushaway() {
         assert!(do_parse("").layout.pushaway);
         assert!(!do_parse("layout { pushaway false; }").layout.pushaway);

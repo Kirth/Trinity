@@ -36,7 +36,7 @@ use smithay::input::{tablet, SeatHandler};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle, Transform, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, Size, Transform, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use touch_overview_grab::TouchOverviewGrab;
@@ -728,13 +728,31 @@ impl State {
     /// Sends a window to limbo, flying off the right edge of the screen.
     fn poof_to_limbo(&mut self, window: &smithay::desktop::Window) {
         let origin = self.niri.layout.tiling_place(window);
-        // The focused window is on the active output.
-        let output = self.niri.layout.active_output().cloned();
-        let rect = self
+        let output = self
             .niri
             .layout
-            .active_monitor_ref()
-            .and_then(|mon| mon.active_window_visual_rectangle());
+            .windows()
+            .find(|(_, mapped)| mapped.window == *window)
+            .and_then(|(mon, _)| mon)
+            .map(|mon| mon.output().clone());
+        // The puff comes out level with the window if it's focused, and from the middle of the
+        // screen otherwise.
+        let is_focused = self
+            .niri
+            .layout
+            .focus()
+            .is_some_and(|mapped| mapped.window == *window);
+        let rect = if is_focused {
+            self.niri
+                .layout
+                .active_monitor_ref()
+                .and_then(|mon| mon.active_window_visual_rectangle())
+        } else {
+            output.as_ref().map(|output| {
+                let size = crate::utils::output_size(output);
+                Rectangle::new(Point::from((0., size.h / 2.)), Size::default())
+            })
+        };
         self.niri.layout.clear_unmap_snapshot(window);
         self.store_unmap_snapshot(window, output.as_ref());
         self.backend.with_primary_renderer(|renderer| {
@@ -744,6 +762,9 @@ impl State {
         });
 
         let moved = self.niri.layout.move_to_limbo(window);
+        if !moved {
+            self.niri.layout.cancel_fly_offs();
+        }
         self.niri.layout.clean_up_i3_workspaces();
         self.niri.queue_redraw_all();
 
@@ -853,6 +874,7 @@ impl State {
             .layout
             .restore_window_to_place(&window, ws_id, None);
         self.niri.layout.clean_up_i3_workspaces();
+        self.niri.limbo_shown = Some(window.clone());
         if self
             .niri
             .poof_undo
@@ -863,6 +885,97 @@ impl State {
         }
         self.niri.queue_redraw_all();
         Some(window)
+    }
+
+    /// Asks the window of a card in the limbo drawer to close.
+    pub(crate) fn close_drawer_window(&mut self, id: crate::window::mapped::MappedId) {
+        let mapped = self
+            .niri
+            .layout
+            .limbo_windows()
+            .find(|mapped| mapped.id() == id);
+        if let Some(mapped) = mapped {
+            mapped.toplevel().send_close();
+        }
+    }
+
+    /// Cycles the limbo drawer's cards with a scroll over them. Returns whether the pointer was
+    /// over the drawer, in which case the scroll shouldn't go anywhere else.
+    fn scroll_drawer(&mut self, source: AxisSource, vertical: f64, horizontal: f64) -> bool {
+        let location = self.niri.seat.get_pointer().unwrap().current_location();
+        let Some((output, pos)) = self.niri.output_under(location) else {
+            return false;
+        };
+        let output = output.clone();
+        if self.niri.drawer_window_under(&output, pos).is_none() {
+            return false;
+        }
+
+        // Along the bottom edge, sideways scrolling cycles too.
+        let edge = self.niri.config.borrow().limbo.edge;
+        let amount = if edge == niri_config::LimboEdge::Bottom && vertical == 0. {
+            horizontal
+        } else {
+            vertical
+        };
+        let ticks = if source == AxisSource::Wheel {
+            self.niri.vertical_wheel_tracker.accumulate(amount)
+        } else {
+            self.niri.vertical_finger_scroll_tracker.accumulate(amount)
+        };
+        if ticks != 0 && self.niri.drawer_overflows(&output) {
+            self.niri.drawer.scroll(i32::from(ticks));
+            self.update_drawer_hover(location);
+            self.niri.queue_redraw_all();
+        }
+        true
+    }
+
+    /// Sends a window to limbo from an action, in i3 mode.
+    fn move_window_to_limbo(&mut self, window: Option<smithay::desktop::Window>) {
+        let Some(window) = window else {
+            return;
+        };
+        if !self.niri.layout.is_i3() || self.niri.layout.is_in_limbo(&window) {
+            return;
+        }
+        self.poof_to_limbo(&window);
+        self.maybe_warp_cursor_to_focus();
+    }
+
+    /// Brings a window out of limbo next to the focused window, from an action, in i3 mode.
+    ///
+    /// Without a window, brings out the newest one.
+    fn pull_from_limbo(&mut self, window: Option<smithay::desktop::Window>) {
+        if !self.niri.layout.is_i3() {
+            return;
+        }
+        let id = {
+            let mut limbo = self.niri.layout.limbo_windows();
+            let mapped = match window {
+                Some(window) => limbo.find(|mapped| mapped.window == window),
+                None => limbo.next(),
+            };
+            mapped.map(|mapped| mapped.id())
+        };
+        let Some(id) = id else {
+            return;
+        };
+        let Some(output) = self.niri.layout.active_output().cloned() else {
+            return;
+        };
+        if self.pull_from_drawer(id, &output).is_some() {
+            self.maybe_warp_cursor_to_focus();
+        }
+    }
+
+    /// The window with this id, in limbo or not.
+    fn window_by_id(&self, id: u64) -> Option<smithay::desktop::Window> {
+        self.niri
+            .layout
+            .windows()
+            .find(|(_, mapped)| mapped.id().get() == id)
+            .map(|(_, mapped)| mapped.window.clone())
     }
 
     /// Remembers a poof so that move-left can undo it.
@@ -1989,6 +2102,36 @@ impl State {
             }
             Action::FocusWindowWithHints => {
                 self.open_ace_hints();
+            }
+            Action::MoveWindowToLimbo => {
+                let window = self.niri.layout.focus().map(|mapped| mapped.window.clone());
+                self.move_window_to_limbo(window);
+            }
+            Action::MoveWindowToLimboById(id) => {
+                let window = self.window_by_id(id);
+                self.move_window_to_limbo(window);
+            }
+            Action::PullFromLimbo => {
+                self.pull_from_limbo(None);
+            }
+            Action::ToggleLimboWindow => {
+                // Like i3's scratchpad show: hide the window last brought out of limbo if it's
+                // focused, otherwise bring out the newest one.
+                let focus = self.niri.layout.focus().map(|mapped| mapped.window.clone());
+                if focus.is_some() && focus == self.niri.limbo_shown {
+                    self.move_window_to_limbo(focus);
+                } else {
+                    self.pull_from_limbo(None);
+                }
+            }
+            Action::ToggleLimboWindowById(id) => {
+                if let Some(window) = self.window_by_id(id) {
+                    if self.niri.layout.is_in_limbo(&window) {
+                        self.pull_from_limbo(Some(window));
+                    } else {
+                        self.move_window_to_limbo(Some(window));
+                    }
+                }
             }
             Action::ResizeMode => {
                 self.niri.resize_mode.toggle();
@@ -3239,6 +3382,29 @@ impl State {
                 }
             }
 
+            // A middle click on a card in the limbo drawer closes its window.
+            if button == Some(MouseButton::Middle) && !is_mru_open && !pointer.is_grabbed() {
+                let location = pointer.current_location();
+                let hit = self.niri.output_under(location).and_then(|(output, pos)| {
+                    let output = output.clone();
+                    self.niri.drawer_window_under(&output, pos)
+                });
+                if let Some(id) = hit {
+                    self.close_drawer_window(id);
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button: button_code,
+                            state: button_state,
+                            serial,
+                            time: event.time(),
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
+            }
+
             // A press on a card in the limbo drawer pulls its window out: a click brings it
             // next to the focused window, a drag moves it.
             if button == Some(MouseButton::Left) && !is_mru_open && !pointer.is_grabbed() {
@@ -3602,6 +3768,24 @@ impl State {
         };
 
         let is_mru_open = self.niri.window_mru_ui.is_open();
+
+        // Scrolling over the limbo drawer cycles its cards.
+        if !is_mru_open && !pointer.is_grabbed() {
+            let (vertical, horizontal) = if source == AxisSource::Wheel {
+                (
+                    vertical_amount_v120.unwrap_or(0.),
+                    horizontal_amount_v120.unwrap_or(0.),
+                )
+            } else {
+                (
+                    event.amount(Axis::Vertical).unwrap_or(0.),
+                    event.amount(Axis::Horizontal).unwrap_or(0.),
+                )
+            };
+            if self.scroll_drawer(source, vertical, horizontal) {
+                return;
+            }
+        }
 
         // Handle wheel scroll bindings.
         if source == AxisSource::Wheel {

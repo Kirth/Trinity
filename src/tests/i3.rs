@@ -863,6 +863,211 @@ fn activating_pulls_out_of_limbo() {
     assert_eq!(focused_id(&mut f), Some(ids[1]));
 }
 
+fn limbo_action(f: &mut Fixture, id: ClientId, action: niri_config::Action) {
+    f.niri_state().do_action(action, false);
+    f.double_roundtrip(id);
+}
+
+#[test]
+fn move_window_to_limbo_action() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    // The focused window goes.
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert!(in_limbo(&mut f, ids[2]));
+
+    // By id, a window that isn't focused goes, and the focus stays.
+    let focus = focused_id(&mut f);
+    limbo_action(
+        &mut f,
+        id,
+        niri_config::Action::MoveWindowToLimboById(ids[0].get()),
+    );
+    assert!(in_limbo(&mut f, ids[0]));
+    assert_eq!(focused_id(&mut f), focus);
+    assert_eq!(drawer_ids(&mut f), [ids[0], ids[2]]);
+
+    // A move-left right after undoes it like a poof.
+    let window = f.niri().layout.focus().unwrap().window.clone();
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert!(f.niri().layout.is_in_limbo(&window));
+    limbo_action(&mut f, id, niri_config::Action::MoveColumnLeft);
+    assert!(!f.niri().layout.is_in_limbo(&window));
+}
+
+#[test]
+fn limbo_actions_need_i3_mode() {
+    let config = Config::parse_mem(r#"layout { layout-mode "scrolling"; }"#).unwrap();
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    limbo_action(&mut f, id, niri_config::Action::ToggleLimboWindow);
+    assert_eq!(f.niri().layout.limbo_windows().count(), 0);
+    assert_eq!(f.niri().layout.windows().count(), 1);
+}
+
+#[test]
+fn pull_from_limbo_walks_the_stack() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert_eq!(drawer_ids(&mut f), [ids[1], ids[2]]);
+
+    // Newest first, each next to the focused window and focused.
+    limbo_action(&mut f, id, niri_config::Action::PullFromLimbo);
+    assert!(!in_limbo(&mut f, ids[1]));
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+
+    limbo_action(&mut f, id, niri_config::Action::PullFromLimbo);
+    assert!(!in_limbo(&mut f, ids[2]));
+    assert_eq!(workspace_number_of(&mut f, ids[2]), Some(1));
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+
+    // With limbo empty, nothing happens.
+    limbo_action(&mut f, id, niri_config::Action::PullFromLimbo);
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+}
+
+#[test]
+fn toggle_limbo_window_shows_and_hides() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert_eq!(drawer_ids(&mut f), [ids[2]]);
+
+    // A focused window that didn't come from limbo stays: the toggle shows the newest instead.
+    limbo_action(&mut f, id, niri_config::Action::ToggleLimboWindow);
+    assert!(!in_limbo(&mut f, ids[2]));
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+
+    // Again hides it, and again shows it.
+    limbo_action(&mut f, id, niri_config::Action::ToggleLimboWindow);
+    assert!(in_limbo(&mut f, ids[2]));
+    assert!(!in_limbo(&mut f, ids[1]));
+    limbo_action(&mut f, id, niri_config::Action::ToggleLimboWindow);
+    assert!(!in_limbo(&mut f, ids[2]));
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+
+    // By id, a window outside limbo goes in, and one in limbo comes out.
+    let toggle =
+        |id: crate::window::mapped::MappedId| niri_config::Action::ToggleLimboWindowById(id.get());
+    limbo_action(&mut f, id, toggle(ids[0]));
+    assert!(in_limbo(&mut f, ids[0]));
+    limbo_action(&mut f, id, toggle(ids[0]));
+    assert!(!in_limbo(&mut f, ids[0]));
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+}
+
+#[test]
+fn hints_label_limbo_windows_last() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    poof(&mut f, 1000);
+    assert_eq!(drawer_ids(&mut f), [ids[2]]);
+
+    // The visible windows get a and s, the card in the drawer comes after them.
+    f.niri_state().open_ace_hints();
+    let niri = f.niri();
+    assert_eq!(niri.ace_hints.label_for(ids[0]), Some(("a", 0)));
+    assert_eq!(niri.ace_hints.label_for(ids[1]), Some(("s", 0)));
+    assert_eq!(niri.ace_hints.label_for(ids[2]), Some(("d", 0)));
+    assert_eq!(
+        niri.ace_hint_drawer_cards(&output)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        [ids[2]]
+    );
+
+    // The drawer slides all the way out while the hints are shown.
+    let niri = f.niri();
+    niri.advance_animations();
+    let now = niri.clock.now_unadjusted();
+    niri.clock
+        .set_unadjusted(now + std::time::Duration::from_secs(1));
+    niri.advance_animations();
+    let (_, loc) = niri.ace_hint_drawer_cards(&output)[0];
+    // Further in than the 10 px it peeks out by otherwise.
+    assert!(loc.x < 1920. - 30., "{loc:?}");
+
+    // Typing its label brings the window out of limbo.
+    tap_key(&mut f, "AC03"); // d
+    f.double_roundtrip(id);
+    assert!(!f.niri().ace_hints.is_open());
+    assert!(!in_limbo(&mut f, ids[2]));
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+}
+
+#[test]
+fn drawer_closes_window() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    // A window that isn't in limbo isn't closed from the drawer.
+    f.niri_state().close_drawer_window(ids[1]);
+    f.double_roundtrip(id);
+    assert!(!f.client(id).window(&second).close_requested);
+
+    poof(&mut f, 1000);
+    assert_eq!(drawer_ids(&mut f), [ids[1]]);
+    f.niri_state().close_drawer_window(ids[1]);
+    f.double_roundtrip(id);
+    assert!(f.client(id).window(&second).close_requested);
+}
+
+#[test]
+fn drawer_cycles_only_when_cards_overflow() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    poof(&mut f, 1000);
+    drawer_ids(&mut f);
+    assert!(!f.niri().drawer_overflows(&output));
+}
+
 #[test]
 fn limbo_window_closes_cleanly() {
     let mut f = Fixture::with_config(i3_config());

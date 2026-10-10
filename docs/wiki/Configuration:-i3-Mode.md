@@ -83,6 +83,9 @@ Poofed one by accident? Press `move-column-left` within half a second, and the w
 
 Windows in limbo peek out as thin, slightly see-through live thumbnails at the right edge of the rightmost output, like a drawer, with the newest on top.
 Hover one to slide it out, lifting off the edge by half a centimetre; click it to bring the window next to the focused one, or drag it out to put it anywhere.
+A slid-out card shows its window's title next to it, and a middle click on a card closes its window.
+A card whose window wants attention sticks out further, outlined in the border's `urgent-color`.
+With more windows in limbo than fit legibly, the drawer shows as many as it can; scroll over it to cycle through the rest.
 The drawer hides in the overview and behind a focused fullscreen window.
 
 The drawer can also sit on the left or bottom edge.
@@ -92,6 +95,20 @@ The poof gesture and flinging always use the right edge.
 limbo {
     // Where the drawer of windows in limbo sits: "left", "right" (default) or "bottom".
     edge "bottom"
+}
+```
+
+Three actions work limbo from the keyboard or from scripts with `niri msg action`:
+
+- `move-window-to-limbo` poofs the focused window, or the one given with `--id`. Like the gesture, `move-column-left` right after puts it back.
+- `pull-from-limbo` brings the newest window in limbo next to the focused one; press it again for the next one.
+- `toggle-limbo-window` works like i3's `scratchpad show`: it brings out the newest window in limbo, and pressing it again while that window is focused sends it back. With `--id`, it brings that window out of limbo, or sends it there.
+
+```kdl
+binds {
+    Mod+Minus { toggle-limbo-window; }
+    Mod+Shift+Minus { move-window-to-limbo; }
+    Mod+Ctrl+Minus { pull-from-limbo; }
 }
 ```
 
@@ -205,6 +222,7 @@ Resize mode also works for floating windows and in the scrolling layout.
 Type a hint to focus its window: the hints use the keys <kbd>a</kbd> <kbd>s</kbd> <kbd>d</kbd> <kbd>f</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
 With more than seven windows, hints are two keys long, and the first key hides the hints that no longer match.
 Windows hidden behind a fullscreen or maximized window are drawn faintly on top of it while the hints are shown, so you can see which window a hint would bring forward.
+The [limbo](#limbo) drawer slides all the way out while the hints are shown, and its windows get hints too, after all the others; picking one brings it out of limbo.
 Any other key, <kbd>Escape</kbd> or a click cancels.
 
 ```kdl
