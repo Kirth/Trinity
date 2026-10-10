@@ -5706,6 +5706,17 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
+    /// Moves a window in limbo to this position, counting from the newest.
+    pub fn move_in_limbo(&mut self, window: &W::Id, idx: usize) -> bool {
+        let Some(from) = self.limbo_idx(window) else {
+            return false;
+        };
+        let removed = self.limbo.remove(from);
+        let idx = idx.min(self.limbo.len());
+        self.limbo.insert(idx, removed);
+        true
+    }
+
     /// Takes a window out of limbo onto a workspace, or the active one if it's gone.
     fn take_out_of_limbo(
         &mut self,

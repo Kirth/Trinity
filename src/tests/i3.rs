@@ -1,10 +1,12 @@
 use client::ClientId;
 use insta::assert_snapshot;
 use niri_config::Config;
+use smithay::input::pointer::GrabStartData as PointerGrabStartData;
 use smithay::utils::Point;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
+use crate::input::drawer_grab::DrawerGrab;
 
 fn i3_config() -> Config {
     Config::parse_mem(r#"layout { layout-mode "i3"; }"#).unwrap()
@@ -1066,6 +1068,94 @@ fn drawer_cycles_only_when_cards_overflow() {
     poof(&mut f, 1000);
     drawer_ids(&mut f);
     assert!(!f.niri().drawer_overflows(&output));
+}
+
+/// Starts dragging the card of a window in the drawer from the middle of its visible strip.
+fn drag_card(f: &mut Fixture, id: crate::window::mapped::MappedId) -> DrawerGrab {
+    let output = f.niri_output(1);
+    let state = f.niri_state();
+    let slot = state
+        .niri
+        .drawer_slots(&output)
+        .into_iter()
+        .find(|slot| slot.id == id)
+        .unwrap();
+    let location = slot.hit.loc + slot.hit.size.downscale(2.).to_point();
+    let start_data = PointerGrabStartData {
+        focus: None,
+        button: 0x110,
+        location,
+    };
+    DrawerGrab::new(state, start_data, output, id).unwrap()
+}
+
+fn three_in_limbo(f: &mut Fixture, id: ClientId) -> Vec<crate::window::mapped::MappedId> {
+    for _ in 0..4 {
+        open_window(f, id);
+    }
+    for _ in 0..3 {
+        limbo_action(f, id, niri_config::Action::MoveWindowToLimbo);
+    }
+    let order = drawer_ids(f);
+    assert_eq!(order.len(), 3);
+    order
+}
+
+#[test]
+fn dragging_a_card_along_the_drawer_rearranges() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let order = three_in_limbo(&mut f, id);
+
+    let mut grab = drag_card(&mut f, order[0]);
+    // Down past the last card.
+    let output = f.niri_output(1);
+    let last = f.niri().drawer_slots(&output)[2].card;
+    let pos = Point::from((1915., last.loc.y + last.size.h));
+    assert!(grab.on_motion(f.niri_state(), pos, pos).is_none());
+    assert_eq!(drawer_ids(&mut f), [order[1], order[2], order[0]]);
+    assert_eq!(f.niri().drawer.dragging(), Some(order[0]));
+
+    // Letting go leaves it there, still in limbo.
+    grab.on_ungrab(f.niri_state());
+    assert_eq!(drawer_ids(&mut f), [order[1], order[2], order[0]]);
+    assert_eq!(f.niri().drawer.dragging(), None);
+}
+
+#[test]
+fn dragging_a_card_into_the_screen_pulls_it_out() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let order = three_in_limbo(&mut f, id);
+
+    let mut grab = drag_card(&mut f, order[1]);
+    let pos = Point::from((1000., 540.));
+    assert!(grab.on_motion(f.niri_state(), pos, pos).is_some());
+    grab.on_ungrab(f.niri_state());
+    f.double_roundtrip(id);
+    assert!(!in_limbo(&mut f, order[1]));
+    assert_eq!(drawer_ids(&mut f), [order[0], order[2]]);
+}
+
+#[test]
+fn clicking_a_card_brings_it_out() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let order = three_in_limbo(&mut f, id);
+
+    // A wobble smaller than the threshold is still a click.
+    let mut grab = drag_card(&mut f, order[2]);
+    let output = f.niri_output(1);
+    let slot = f.niri().drawer_slots(&output)[2].hit;
+    let pos = slot.loc + slot.size.downscale(2.).to_point() + Point::from((0., 3.));
+    assert!(grab.on_motion(f.niri_state(), pos, pos).is_none());
+    grab.on_ungrab(f.niri_state());
+    f.double_roundtrip(id);
+    assert!(!in_limbo(&mut f, order[2]));
+    assert_eq!(focused_id(&mut f), Some(order[2]));
 }
 
 #[test]

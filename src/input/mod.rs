@@ -41,6 +41,7 @@ use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use touch_overview_grab::TouchOverviewGrab;
 
+use self::drawer_grab::DrawerGrab;
 use self::move_grab::MoveGrab;
 use self::pick_color_grab::PickColorGrab;
 use self::pick_window_grab::PickWindowGrab;
@@ -60,6 +61,7 @@ use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
 
 pub mod backend_ext;
 pub mod click_grab;
+pub mod drawer_grab;
 pub mod move_grab;
 pub mod pick_color_grab;
 pub mod pick_window_grab;
@@ -3405,8 +3407,9 @@ impl State {
                 }
             }
 
-            // A press on a card in the limbo drawer pulls its window out: a click brings it
-            // next to the focused window, a drag moves it.
+            // A press on a card in the limbo drawer: a click brings its window next to the
+            // focused one, a drag along the drawer rearranges the cards, and a drag into the
+            // screen pulls the window out.
             if button == Some(MouseButton::Left) && !is_mru_open && !pointer.is_grabbed() {
                 let location = pointer.current_location();
                 let hit = self.niri.output_under(location).and_then(|(output, pos)| {
@@ -3415,22 +3418,13 @@ impl State {
                     Some((output, id))
                 });
                 if let Some((output, id)) = hit {
-                    if let Some(window) = self.pull_from_drawer(id, &output) {
-                        let start_data = PointerGrabStartData {
-                            focus: None,
-                            button: button_code,
-                            location,
-                        };
-                        let start_data = AnyStartData::Pointer(start_data);
-                        let icon = CursorIcon::Grabbing;
-                        if let Some(grab) =
-                            MoveGrab::new(self, start_data, window, false, Some(icon))
-                        {
-                            pointer.set_grab(self, grab, serial, Focus::Clear);
-                            self.niri
-                                .cursor_manager
-                                .set_cursor_image(CursorImageStatus::Named(icon));
-                        }
+                    let start_data = PointerGrabStartData {
+                        focus: None,
+                        button: button_code,
+                        location,
+                    };
+                    if let Some(grab) = DrawerGrab::new(self, start_data, output, id) {
+                        pointer.set_grab(self, grab, serial, Focus::Clear);
                     }
 
                     pointer.button(

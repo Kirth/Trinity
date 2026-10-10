@@ -176,7 +176,7 @@ use crate::render_helpers::{
 use crate::screencasting::Screencasting;
 use crate::ui::ace_hints::{AceHints, HintOutcome, GHOST_ALPHA};
 use crate::ui::config_error_notification::ConfigErrorNotification;
-use crate::ui::drawer::{Drawer, DrawerPlacement, DrawerRenderElement, MARGIN_MM};
+use crate::ui::drawer::{Drawer, DrawerPlacement, DrawerRenderElement, Slot, MARGIN_MM};
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
@@ -4605,20 +4605,6 @@ impl Niri {
             &mut |elem| push(elem.into()),
         );
 
-        // Then, the limbo drawer.
-        let drawer_windows = self.drawer_windows(output);
-        if !drawer_windows.is_empty() {
-            self.drawer.render(
-                ctx.r(),
-                output_size(output),
-                &drawer_windows,
-                self.drawer_placement(output),
-                self.config.borrow().layout.border.urgent_color,
-                output.current_scale().fractional_scale(),
-                &mut |elem| push(elem.into()),
-            );
-        }
-
         // Then, the window hints.
         if self.ace_hints.is_open() {
             let scale = output.current_scale().fractional_scale();
@@ -4637,6 +4623,20 @@ impl Niri {
                     push(OutputRenderElements::Tile(elem))
                 });
             }
+        }
+
+        // Then, the limbo drawer, below the hints so that its cards don't cover their labels.
+        let drawer_windows = self.drawer_windows(output);
+        if !drawer_windows.is_empty() {
+            self.drawer.render(
+                ctx.r(),
+                output_size(output),
+                &drawer_windows,
+                self.drawer_placement(output),
+                self.config.borrow().layout.border.urgent_color,
+                output.current_scale().fractional_scale(),
+                &mut |elem| push(elem.into()),
+            );
         }
 
         // Then, the resize mode label.
@@ -6663,19 +6663,21 @@ impl Niri {
     /// Cards in the limbo drawer on this output with their top-left corner, in output-local
     /// logical coordinates.
     pub fn ace_hint_drawer_cards(&self, output: &Output) -> Vec<(MappedId, Point<f64, Logical>)> {
+        self.drawer_slots(output)
+            .into_iter()
+            .map(|slot| (slot.id, slot.card.loc))
+            .collect()
+    }
+
+    /// Where the limbo drawer's shown cards are on this output, in output-local coordinates.
+    pub fn drawer_slots(&self, output: &Output) -> Vec<Slot> {
         let items: Vec<_> = self
             .drawer_windows(output)
             .iter()
             .map(|mapped| crate::ui::drawer::Item::new(mapped))
             .collect();
-        if items.is_empty() {
-            return Vec::new();
-        }
         self.drawer
             .slots(output_size(output), &items, self.drawer_placement(output))
-            .into_iter()
-            .map(|slot| (slot.id, slot.card.loc))
-            .collect()
     }
 
     /// Windows in limbo, shown in the drawer on this output, newest first.

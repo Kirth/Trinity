@@ -120,6 +120,8 @@ pub struct Drawer {
     popped: bool,
     /// Index of the first card shown, when they don't all fit.
     offset: usize,
+    /// The card being dragged along the drawer, with where it starts along the edge.
+    dragging: Option<(MappedId, f64)>,
     /// How far each card has slid out, from 0 to 1.
     extend: HashMap<MappedId, f64>,
     last_tick: Option<Duration>,
@@ -137,7 +139,7 @@ impl Drawer {
     /// Matches the drawer to the windows in limbo, newest first.
     pub fn sync(&mut self, present: &[MappedId]) {
         // Show a newly poofed window, which goes first.
-        if present.first() != self.order.first() {
+        if present.first().is_some_and(|id| !self.order.contains(id)) {
             self.offset = 0;
         }
         self.offset = self.offset.checked_rem(present.len()).unwrap_or(0);
@@ -150,6 +152,9 @@ impl Drawer {
             .is_some_and(|(_, id)| !present.contains(id))
         {
             self.hovered = None;
+        }
+        if self.dragging.is_some_and(|(id, _)| !present.contains(&id)) {
+            self.dragging = None;
         }
     }
 
@@ -176,9 +181,18 @@ impl Drawer {
         self.popped = popped;
     }
 
+    /// Drags a card along the drawer, to this position along the edge, or lets go of it.
+    pub fn set_dragging(&mut self, dragging: Option<(MappedId, f64)>) {
+        self.dragging = dragging;
+    }
+
+    pub fn dragging(&self) -> Option<MappedId> {
+        self.dragging.map(|(id, _)| id)
+    }
+
     /// Whether this card should be slid out.
     fn is_out(&self, id: MappedId) -> bool {
-        self.popped || self.hovered() == Some(id)
+        self.popped || self.hovered() == Some(id) || self.dragging() == Some(id)
     }
 
     /// Cycles the cards by this many, when they don't all fit.
@@ -200,9 +214,14 @@ impl Drawer {
         items: &[Item],
         placement: DrawerPlacement,
     ) -> Vec<Slot> {
-        slots(output_size, items, placement, self.offset, |id| {
-            self.extend.get(&id).copied().unwrap_or(0.)
-        })
+        slots(
+            output_size,
+            items,
+            placement,
+            self.offset,
+            self.dragging,
+            |id| self.extend.get(&id).copied().unwrap_or(0.),
+        )
     }
 
     /// Whether only some of the cards fit on an output.
@@ -291,6 +310,11 @@ impl Drawer {
             }
         }
 
+        // The dragged card goes first, to draw above the others.
+        let mut slots = slots;
+        if let Some(id) = self.dragging() {
+            slots.sort_by_key(|slot| slot.id != id);
+        }
         for slot in slots {
             let Some(mapped) = windows.iter().find(|mapped| mapped.id() == slot.id) else {
                 continue;
@@ -392,6 +416,61 @@ fn caption_loc(
     }
 }
 
+/// Position of a point along the drawer's edge: down it at the sides, across it at the bottom.
+pub fn along_edge(edge: LimboEdge, point: Point<f64, Logical>) -> f64 {
+    match edge {
+        LimboEdge::Left | LimboEdge::Right => point.y,
+        LimboEdge::Bottom => point.x,
+    }
+}
+
+/// Whether a point is further into the screen than a card reaches, by more than `distance`.
+pub fn is_past_card(
+    edge: LimboEdge,
+    card: Rectangle<f64, Logical>,
+    point: Point<f64, Logical>,
+    distance: f64,
+) -> bool {
+    match edge {
+        LimboEdge::Right => point.x < card.loc.x - distance,
+        LimboEdge::Left => point.x > card.loc.x + card.size.w + distance,
+        LimboEdge::Bottom => point.y < card.loc.y - distance,
+    }
+}
+
+/// Where a dragged card goes among the other shown cards, for a pointer at this position along
+/// the edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Insert {
+    Before(MappedId),
+    After(MappedId),
+}
+
+/// Where the dragged card goes: before the first other card whose middle is past the pointer,
+/// or after the last one.
+pub fn insertion_point(
+    slots: &[Slot],
+    edge: LimboEdge,
+    dragged: MappedId,
+    along: f64,
+) -> Option<Insert> {
+    let middle = |slot: &Slot| {
+        along_edge(
+            edge,
+            slot.card.loc + slot.card.size.downscale(2.).to_point(),
+        )
+    };
+    let mut others = slots.iter().filter(|slot| slot.id != dragged);
+    let mut last = None;
+    for slot in &mut others {
+        if middle(slot) > along {
+            return Some(Insert::Before(slot.id));
+        }
+        last = Some(slot.id);
+    }
+    last.map(Insert::After)
+}
+
 /// Size of a window for its card.
 pub fn window_size(mapped: &Mapped) -> Size<f64, Logical> {
     let size = crate::layout::LayoutElement::size(mapped).to_f64();
@@ -411,6 +490,7 @@ fn slots(
     items: &[Item],
     placement: DrawerPlacement,
     offset: usize,
+    drag: Option<(MappedId, f64)>,
     extend: impl Fn(MappedId) -> f64,
 ) -> Vec<Slot> {
     if items.is_empty() {
@@ -461,18 +541,27 @@ fn slots(
         }
     }
 
-    let mut pos = ((along(output_size) - total(&shown_items, card_h)) / 2.).max(0.);
+    let mut next = ((along(output_size) - total(&shown_items, card_h)) / 2.).max(0.);
     let output = Rectangle::from_size(output_size);
 
     shown_items
         .into_iter()
         .map(|item| {
             let id = item.id;
+            let pos = next;
             let size = card_size(item.size, card_h);
             // How far into the screen the card reaches.
             let depth = if in_row { size.h } else { size.w };
             let peek = if item.urgent { URGENT_PEEK } else { PEEK };
             let shown = peek + extend(id).clamp(0., 1.) * (depth + placement.margin - peek);
+
+            // A dragged card follows the pointer, leaving its place in the order empty.
+            let pos = match drag {
+                Some((dragged, at)) if dragged == id => {
+                    at.clamp(0., (along(output_size) - along(size)).max(0.))
+                }
+                _ => pos,
+            };
 
             let (card, edge_side) = match placement.edge {
                 LimboEdge::Right => {
@@ -496,7 +585,7 @@ fn slots(
             };
             let hit = edge_side.intersection(output).unwrap_or_default();
 
-            pos += along(size) + GAP;
+            next += along(size) + GAP;
             Slot { id, card, hit }
         })
         .collect()
@@ -536,7 +625,14 @@ mod tests {
     #[test]
     fn right_cards_stack_centered_and_peek() {
         let ids = ids(2);
-        let slots = slots(output(), &items(&ids), at(LimboEdge::Right), 0, |_| 0.);
+        let slots = slots(
+            output(),
+            &items(&ids),
+            at(LimboEdge::Right),
+            0,
+            None,
+            |_| 0.,
+        );
 
         // 120 high, 160 wide, 8 apart, centered.
         assert_eq!(slots[0].card.size, Size::from((160., 120.)));
@@ -553,18 +649,18 @@ mod tests {
         let ids = ids(1);
         let items = items(&ids);
 
-        let right = slots(output(), &items, at(LimboEdge::Right), 0, |_| 1.)[0];
+        let right = slots(output(), &items, at(LimboEdge::Right), 0, None, |_| 1.)[0];
         assert_eq!(right.card.loc.x + right.card.size.w, 1920. - MARGIN);
         // The gap to the edge still counts as the card.
         assert_eq!(right.hit.loc.x, right.card.loc.x);
         assert_eq!(right.hit.loc.x + right.hit.size.w, 1920.);
 
-        let left = slots(output(), &items, at(LimboEdge::Left), 0, |_| 1.)[0];
+        let left = slots(output(), &items, at(LimboEdge::Left), 0, None, |_| 1.)[0];
         assert_eq!(left.card.loc.x, MARGIN);
         assert_eq!(left.hit.loc.x, 0.);
         assert_eq!(left.hit.size.w, MARGIN + left.card.size.w);
 
-        let bottom = slots(output(), &items, at(LimboEdge::Bottom), 0, |_| 1.)[0];
+        let bottom = slots(output(), &items, at(LimboEdge::Bottom), 0, None, |_| 1.)[0];
         assert_eq!(bottom.card.loc.y + bottom.card.size.h, 1080. - MARGIN);
         assert_eq!(bottom.hit.loc.y + bottom.hit.size.h, 1080.);
     }
@@ -572,7 +668,7 @@ mod tests {
     #[test]
     fn left_cards_peek_from_the_left() {
         let ids = ids(1);
-        let slot = slots(output(), &items(&ids), at(LimboEdge::Left), 0, |_| 0.)[0];
+        let slot = slots(output(), &items(&ids), at(LimboEdge::Left), 0, None, |_| 0.)[0];
         assert_eq!(slot.card.loc.x + slot.card.size.w, PEEK);
         assert_eq!(
             slot.hit,
@@ -583,7 +679,14 @@ mod tests {
     #[test]
     fn bottom_cards_form_a_centered_row() {
         let ids = ids(2);
-        let slots = slots(output(), &items(&ids), at(LimboEdge::Bottom), 0, |_| 0.);
+        let slots = slots(
+            output(),
+            &items(&ids),
+            at(LimboEdge::Bottom),
+            0,
+            None,
+            |_| 0.,
+        );
         assert_eq!(slots[0].card.loc.y, 1080. - PEEK);
         assert_eq!(slots[0].card.loc.x, (1920. - 328.) / 2.);
         assert_eq!(slots[1].card.loc.x, slots[0].card.loc.x + 168.);
@@ -595,13 +698,13 @@ mod tests {
         let ids = ids(30);
         let items = items(&ids);
 
-        let right = slots(output(), &items, at(LimboEdge::Right), 0, |_| 0.);
+        let right = slots(output(), &items, at(LimboEdge::Right), 0, None, |_| 0.);
         let last = right.last().unwrap().card;
         assert!(right[0].card.size.h < CARD_H);
         assert!(right[0].card.loc.y >= 0.);
         assert!(last.loc.y + last.size.h <= 1080.);
 
-        let bottom = slots(output(), &items, at(LimboEdge::Bottom), 0, |_| 0.);
+        let bottom = slots(output(), &items, at(LimboEdge::Bottom), 0, None, |_| 0.);
         let last = bottom.last().unwrap().card;
         assert!(bottom[0].card.size.h < CARD_H);
         assert!(bottom[0].card.loc.x >= 0.);
@@ -661,7 +764,7 @@ mod tests {
         let ids = ids(2);
         let mut items = items(&ids);
         items[1].urgent = true;
-        let slots = slots(output(), &items, at(LimboEdge::Right), 0, |_| 0.);
+        let slots = slots(output(), &items, at(LimboEdge::Right), 0, None, |_| 0.);
         assert_eq!(slots[0].card.loc.x, 1920. - PEEK);
         assert_eq!(slots[1].card.loc.x, 1920. - URGENT_PEEK);
         assert_eq!(slots[1].hit.size.w, URGENT_PEEK);
@@ -672,7 +775,7 @@ mod tests {
         let ids = ids(30);
         let items = items(&ids);
 
-        let shown = slots(output(), &items, at(LimboEdge::Right), 0, |_| 0.);
+        let shown = slots(output(), &items, at(LimboEdge::Right), 0, None, |_| 0.);
         assert!(shown.len() < 30);
         assert!(shown.iter().all(|slot| slot.card.size.h == MIN_CARD_H));
         let last = shown.last().unwrap().card;
@@ -682,9 +785,9 @@ mod tests {
 
         // An offset starts further in, and wraps round to the start.
         let n = shown.len();
-        let shifted = slots(output(), &items, at(LimboEdge::Right), 1, |_| 0.);
+        let shifted = slots(output(), &items, at(LimboEdge::Right), 1, None, |_| 0.);
         assert_eq!(shifted[0].id, ids[1]);
-        let wrapped = slots(output(), &items, at(LimboEdge::Right), 29, |_| 0.);
+        let wrapped = slots(output(), &items, at(LimboEdge::Right), 29, None, |_| 0.);
         assert_eq!(wrapped[0].id, ids[29]);
         assert_eq!(wrapped[1].id, ids[0]);
         assert_eq!(wrapped.len(), n);
@@ -737,6 +840,93 @@ mod tests {
     fn long_titles_are_cut() {
         assert_eq!(truncate("short", 10), "short");
         assert_eq!(truncate("ééééé", 3), "ééé…");
+    }
+
+    #[test]
+    fn dragged_card_follows_the_pointer() {
+        let ids = ids(3);
+        let items = items(&ids);
+        let still = slots(output(), &items, at(LimboEdge::Right), 0, None, |_| 0.);
+        let dragged = slots(
+            output(),
+            &items,
+            at(LimboEdge::Right),
+            0,
+            Some((ids[1], 900.)),
+            |_| 0.,
+        );
+        assert_eq!(dragged[1].card.loc.y, 900.);
+        assert_eq!(dragged[1].hit.loc.y, 900.);
+        assert_eq!(dragged[0], still[0]);
+        assert_eq!(dragged[2], still[2]);
+
+        // It stays on the output.
+        let dragged = slots(
+            output(),
+            &items,
+            at(LimboEdge::Right),
+            0,
+            Some((ids[1], 5000.)),
+            |_| 0.,
+        );
+        assert_eq!(dragged[1].card.loc.y, 1080. - 120.);
+    }
+
+    #[test]
+    fn dragged_card_stays_out() {
+        let mut drawer = Drawer::new();
+        let ids = ids(2);
+        drawer.sync(&ids);
+        drawer.advance_animations(Duration::ZERO);
+        drawer.set_dragging(Some((ids[0], 0.)));
+        drawer.advance_animations(SLIDE);
+        assert_eq!(drawer.extend[&ids[0]], 1.);
+        assert!(!drawer.extend.contains_key(&ids[1]));
+    }
+
+    #[test]
+    fn reordering_keeps_the_scroll() {
+        let mut drawer = Drawer::new();
+        let ids = ids(3);
+        drawer.sync(&ids);
+        drawer.scroll(1);
+        drawer.sync(&[ids[2], ids[0], ids[1]]);
+        assert_eq!(drawer.offset, 1);
+    }
+
+    #[test]
+    fn pulling_out_needs_to_clear_the_card() {
+        let card = Rectangle::new(Point::from((1700., 500.)), Size::from((200., 100.)));
+        let past = |edge, x, y| is_past_card(edge, card, Point::from((x, y)), 32.);
+        assert!(!past(LimboEdge::Right, 1690., 550.));
+        assert!(past(LimboEdge::Right, 1660., 550.));
+        assert!(!past(LimboEdge::Left, 1910., 550.));
+        assert!(past(LimboEdge::Left, 1940., 550.));
+        assert!(!past(LimboEdge::Bottom, 1750., 480.));
+        assert!(past(LimboEdge::Bottom, 1750., 460.));
+    }
+
+    #[test]
+    fn insertion_point_goes_by_the_other_middles() {
+        let ids = ids(3);
+        let slots = slots(
+            output(),
+            &items(&ids),
+            at(LimboEdge::Right),
+            0,
+            None,
+            |_| 0.,
+        );
+        let middle = |i: usize| slots[i].card.loc.y + slots[i].card.size.h / 2.;
+        let insert = |along| insertion_point(&slots, LimboEdge::Right, ids[0], along);
+        assert_eq!(insert(0.), Some(Insert::Before(ids[1])));
+        assert_eq!(insert(middle(1) + 1.), Some(Insert::Before(ids[2])));
+        assert_eq!(insert(middle(2) + 1.), Some(Insert::After(ids[2])));
+        // Alone in the drawer, there's nowhere to go.
+        assert_eq!(
+            insertion_point(&slots[..1], LimboEdge::Right, ids[0], 0.),
+            None
+        );
     }
 
     #[test]

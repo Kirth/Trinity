@@ -82,7 +82,8 @@ A slow drag to the edge drops it there as usual.
 Poofed one by accident? Press `move-column-left` within half a second, and the window comes back exactly where it was, in the same container and at the same size.
 
 Windows in limbo peek out as thin, slightly see-through live thumbnails at the right edge of the rightmost output, like a drawer, with the newest on top.
-Hover one to slide it out, lifting off the edge by half a centimetre; click it to bring the window next to the focused one, or drag it out to put it anywhere.
+Hover one to slide it out, lifting off the edge by half a centimetre; click it to bring the window next to the focused one.
+Drag a card along the drawer to rearrange the cards, or drag it into the screen to pull its window out and drop it anywhere.
 A slid-out card shows its window's title next to it, and a middle click on a card closes its window.
 A card whose window wants attention sticks out further, outlined in the border's `urgent-color`.
 With more windows in limbo than fit legibly, the drawer shows as many as it can; scroll over it to cycle through the rest.

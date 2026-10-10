@@ -486,6 +486,12 @@ enum Op {
     FocusWindow(#[proptest(strategy = "1..=5usize")] usize),
     MoveToLimbo(#[proptest(strategy = "1..=5usize")] usize),
     RestoreFromLimbo(#[proptest(strategy = "1..=5usize")] usize),
+    MoveInLimbo {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "0..=5usize")]
+        idx: usize,
+    },
     FocusWindowInColumn(#[proptest(strategy = "1..=5u8")] u8),
     FocusWindowTop,
     FocusWindowBottom,
@@ -1158,6 +1164,9 @@ impl Op {
             Op::MoveToLimbo(id) => {
                 layout.move_to_limbo(&id);
             }
+            Op::MoveInLimbo { id, idx } => {
+                layout.move_in_limbo(&id, idx);
+            }
             Op::RestoreFromLimbo(id) => {
                 if let Some(ws_id) = layout.active_workspace().map(|ws| ws.id()) {
                     if layout.is_in_limbo(&id) {
@@ -1696,6 +1705,30 @@ impl Op {
 }
 
 #[track_caller]
+#[test]
+fn move_in_limbo_reorders() {
+    let mut ops = vec![Op::AddOutput(1)];
+    for id in 1..=3 {
+        ops.push(Op::AddWindow {
+            params: TestWindowParams::new(id),
+        });
+    }
+    // Newest first: 3, 2, 1.
+    ops.extend([Op::MoveToLimbo(1), Op::MoveToLimbo(2), Op::MoveToLimbo(3)]);
+    let mut layout = check_ops(ops);
+    let order = |layout: &Layout<TestWindow>| -> Vec<usize> {
+        layout.limbo_windows().map(|win| *win.id()).collect()
+    };
+    assert_eq!(order(&layout), [3, 2, 1]);
+
+    assert!(layout.move_in_limbo(&1, 0));
+    assert_eq!(order(&layout), [1, 3, 2]);
+    assert!(layout.move_in_limbo(&1, 10));
+    assert_eq!(order(&layout), [3, 2, 1]);
+    // Not in limbo.
+    assert!(!layout.move_in_limbo(&4, 0));
+}
+
 fn check_ops_on_layout(layout: &mut Layout<TestWindow>, ops: impl IntoIterator<Item = Op>) {
     for op in ops {
         op.apply(layout);
