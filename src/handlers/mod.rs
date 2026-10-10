@@ -103,7 +103,7 @@ impl SeatHandler for State {
         if self.niri.screenshot_ui.is_open() {
             image = CursorImageStatus::Named(CursorIcon::Crosshair);
         } else if self.niri.drawer.hovered().is_some() {
-            // Same for the scratchpad drawer.
+            // Same for the limbo drawer.
             image = CursorImageStatus::Named(CursorIcon::Pointer);
         }
         self.niri.cursor_manager.set_cursor_image(image);

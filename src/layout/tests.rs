@@ -484,6 +484,8 @@ enum Op {
     FocusWindowOrWorkspaceDown,
     FocusWindowOrWorkspaceUp,
     FocusWindow(#[proptest(strategy = "1..=5usize")] usize),
+    MoveToLimbo(#[proptest(strategy = "1..=5usize")] usize),
+    RestoreFromLimbo(#[proptest(strategy = "1..=5usize")] usize),
     FocusWindowInColumn(#[proptest(strategy = "1..=5u8")] u8),
     FocusWindowTop,
     FocusWindowBottom,
@@ -1016,6 +1018,9 @@ impl Op {
                         return;
                     }
                 }
+                if layout.is_in_limbo(&params.id) {
+                    return;
+                }
 
                 match &mut layout.monitor_set {
                     MonitorSet::Normal { monitors, .. } => {
@@ -1150,6 +1155,16 @@ impl Op {
             Op::FocusWindowOrWorkspaceDown => layout.focus_window_or_workspace_down(),
             Op::FocusWindowOrWorkspaceUp => layout.focus_window_or_workspace_up(),
             Op::FocusWindow(id) => layout.activate_window(&id),
+            Op::MoveToLimbo(id) => {
+                layout.move_to_limbo(&id);
+            }
+            Op::RestoreFromLimbo(id) => {
+                if let Some(ws_id) = layout.active_workspace().map(|ws| ws.id()) {
+                    if layout.is_in_limbo(&id) {
+                        layout.restore_window_to_place(&id, ws_id, None);
+                    }
+                }
+            }
             Op::FocusWindowInColumn(index) => layout.focus_window_in_column(index),
             Op::FocusWindowTop => layout.focus_window_top(),
             Op::FocusWindowBottom => layout.focus_window_bottom(),

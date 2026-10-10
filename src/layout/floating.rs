@@ -667,7 +667,7 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    /// Drops the windows flying off to the scratchpad.
+    /// Drops the windows flying off to limbo.
     pub fn cancel_fly_offs(&mut self) {
         self.closing_windows.retain(|closing| !closing.is_fly_off());
     }

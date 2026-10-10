@@ -475,8 +475,25 @@ fn workspace_number_of(f: &mut Fixture, id: crate::window::mapped::MappedId) -> 
     ws.flatten()
 }
 
+fn in_limbo(f: &mut Fixture, id: crate::window::mapped::MappedId) -> bool {
+    let layout = &f.niri().layout;
+    let in_limbo = layout.limbo_windows().any(|m| m.id() == id);
+    if in_limbo {
+        // Then it's on no workspace.
+        assert!(workspace_number_of(f, id).is_none());
+    }
+    in_limbo
+}
+
+fn no_workspace_0(f: &mut Fixture) -> bool {
+    f.niri()
+        .layout
+        .workspaces()
+        .all(|(_, _, ws)| ws.number() != Some(0))
+}
+
 #[test]
-fn poof_sends_window_to_workspace_0() {
+fn poof_sends_window_to_limbo() {
     // The puff plays even with animations off.
     let config = r#"layout { layout-mode "i3"; }; animations { off; }"#;
     let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
@@ -506,7 +523,8 @@ fn poof_sends_window_to_workspace_0() {
     assert!(f.niri().poof.are_animations_ongoing(&output));
     f.double_roundtrip(id);
 
-    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+    assert!(in_limbo(&mut f, ids[1]));
+    assert!(no_workspace_0(&mut f));
     assert_eq!(
         f.niri().layout.active_workspace().unwrap().number(),
         Some(1)
@@ -543,7 +561,7 @@ fn slow_edge_presses_dont_poof() {
     assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
     // And the third one poofs it.
     move_right_at(&mut f, 3500);
-    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+    assert!(in_limbo(&mut f, ids[1]));
 }
 
 /// The i3 tree of the active workspace, as text.
@@ -589,7 +607,7 @@ fn fling(f: &mut Fixture, window: &smithay::desktop::Window, msec: u64) -> bool 
     f.niri()
         .clock
         .set_unadjusted(std::time::Duration::from_millis(msec));
-    f.niri_state().fling_to_scratchpad(window, &output, 300.)
+    f.niri_state().fling_to_limbo(window, &output, 300.)
 }
 
 #[test]
@@ -610,24 +628,20 @@ fn undo_poof_restores_place() {
     for msec in [1000, 1100, 1200] {
         move_right_at(&mut f, msec);
     }
-    assert_eq!(workspace_number_of(&mut f, ids[2]), Some(0));
+    assert!(in_limbo(&mut f, ids[2]));
     assert_ne!(active_tree(&mut f), before);
 
     // Move-left right after puts it back in the same place, with the same sizes, focused.
-    move_left_at(&mut f, 1700);
+    move_left_at(&mut f, 1500);
     f.double_roundtrip(id);
     assert_eq!(workspace_number_of(&mut f, ids[2]), Some(1));
     assert_eq!(active_tree(&mut f), before);
     assert_eq!(focused_id(&mut f), Some(ids[2]));
-    // Workspace 0 went away with it.
-    assert!(f
-        .niri()
-        .layout
-        .workspaces()
-        .all(|(_, _, ws)| ws.number() != Some(0)));
+    // Limbo isn't a workspace.
+    assert!(no_workspace_0(&mut f));
 
     // The undo is used up: another move-left moves as usual.
-    move_left_at(&mut f, 1800);
+    move_left_at(&mut f, 1600);
     assert_eq!(workspace_number_of(&mut f, ids[2]), Some(1));
     assert_ne!(active_tree(&mut f), before);
 }
@@ -645,9 +659,9 @@ fn late_move_left_doesnt_undo() {
     for msec in [1000, 1100, 1200] {
         move_right_at(&mut f, msec);
     }
-    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+    assert!(in_limbo(&mut f, ids[1]));
     move_left_at(&mut f, 3500);
-    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+    assert!(in_limbo(&mut f, ids[1]));
 }
 
 #[test]
@@ -671,7 +685,7 @@ fn fling_poofs_dragged_window() {
     assert!(fling(&mut f, &window2, 1000));
     assert!(f.niri().poof.are_animations_ongoing(&output));
     f.double_roundtrip(id);
-    assert_eq!(workspace_number_of(&mut f, id2), Some(0));
+    assert!(in_limbo(&mut f, id2));
 
     // Move-left puts it back where the drag started.
     move_left_at(&mut f, 1500);
@@ -704,7 +718,7 @@ fn undo_recreates_emptied_container() {
     let (id3, window3) = windows[2].clone();
     assert!(fling(&mut f, &window3, 5000));
     f.double_roundtrip(id);
-    assert_eq!(workspace_number_of(&mut f, id3), Some(0));
+    assert!(in_limbo(&mut f, id3));
     assert!(!active_tree(&mut f).contains("SplitV["));
 
     // Undo recreates the container around 3.
@@ -790,13 +804,132 @@ fn pull_from_drawer_focuses_window() {
     assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
     assert_eq!(focused_id(&mut f), Some(ids[1]));
     assert!(drawer_ids(&mut f).is_empty());
-    assert!(f
-        .niri()
-        .layout
-        .workspaces()
-        .all(|(_, _, ws)| ws.number() != Some(0)));
+    assert!(no_workspace_0(&mut f));
 
     // It's no longer undoable as a poof.
     move_left_at(&mut f, 1500);
     assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+}
+
+fn poof(f: &mut Fixture, start_msec: u64) {
+    for msec in [start_msec, start_msec + 100, start_msec + 200] {
+        move_right_at(f, msec);
+    }
+}
+
+#[test]
+fn poof_from_workspace_0() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    // Workspace 0 is a normal workspace.
+    f.niri_state().do_action(
+        niri_config::Action::FocusWorkspace(niri_config::WorkspaceReference::Index(0)),
+        false,
+    );
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    assert_eq!(workspace_number_of(&mut f, ids[0]), Some(0));
+
+    poof(&mut f, 1000);
+    assert!(in_limbo(&mut f, ids[1]));
+    assert_eq!(workspace_number_of(&mut f, ids[0]), Some(0));
+
+    // And undo puts it back on workspace 0.
+    move_left_at(&mut f, 1500);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+}
+
+#[test]
+fn activating_pulls_out_of_limbo() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    poof(&mut f, 1000);
+    assert!(in_limbo(&mut f, ids[1]));
+
+    f.niri_state()
+        .do_action(niri_config::Action::FocusWindow(ids[1].get()), false);
+    f.double_roundtrip(id);
+    assert!(!in_limbo(&mut f, ids[1]));
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+}
+
+#[test]
+fn limbo_window_closes_cleanly() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    poof(&mut f, 1000);
+    assert_eq!(drawer_ids(&mut f), [ids[1]]);
+
+    // It commits while in limbo, then goes away.
+    let window = f.client(id).window(&second);
+    window.attach_new_buffer();
+    window.commit();
+    f.double_roundtrip(id);
+    let window = f.client(id).window(&second);
+    window.attach_null();
+    window.commit();
+    f.double_roundtrip(id);
+
+    assert!(!f.niri().layout.windows().any(|(_, m)| m.id() == ids[1]));
+    assert!(drawer_ids(&mut f).is_empty());
+}
+
+#[test]
+fn limbo_windows_listed_without_workspace() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+
+    let mut listed = Vec::new();
+    f.niri().layout.with_windows(|mapped, output, ws_id, _| {
+        listed.push((mapped.id(), output.is_some(), ws_id.is_some()));
+    });
+    assert!(listed.contains(&(ids[1], false, false)));
+    assert!(listed.contains(&(ids[0], true, true)));
+}
+
+#[test]
+fn drawer_on_left_edge() {
+    let config = r#"layout { layout-mode "i3"; }; limbo { edge "left"; }"#;
+    let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    // The gesture still uses the right edge.
+    poof(&mut f, 1000);
+    assert_eq!(drawer_ids(&mut f), [ids[1]]);
+
+    // The card peeks out on the left.
+    let niri = f.niri();
+    let hits = |x: f64| (0..1080).step_by(4).any(|y| {
+        niri.drawer_window_under(&output, Point::from((x, y as f64))) == Some(ids[1])
+    });
+    assert!(hits(5.));
+    assert!(!hits(1915.));
 }

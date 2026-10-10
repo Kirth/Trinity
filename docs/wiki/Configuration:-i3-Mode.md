@@ -68,24 +68,35 @@ binds {
 
 `pushaway` can only be set in the top-level `layout {}` section, and has no effect in the scrolling layout.
 
-#### Scratchpad
+#### Limbo
 
-Workspace 0 is the scratchpad: workspaces are never numbered 0 on their own, so it sorts first and only holds the windows you send there.
-To send a window there, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies off the right edge in a puff of smoke and lands on workspace 0.
+Limbo is a hidden place for windows you want out of the way: it isn't a workspace, so it doesn't show up in your bar, in the overview or in the Alt-Tab switcher.
+
+To send a window there, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies off the right edge in a puff of smoke.
 Holding the key down doesn't count, and focus stays on the current workspace.
 The fly-off and the puff play even with `animations { off; }`.
 
-You can also throw a window to the scratchpad with the mouse: drag it and let go while it's moving quickly into the right edge of the screen.
+You can also throw a window into limbo with the mouse: drag it and let go while it's moving quickly into the right edge of the screen.
 A slow drag to the edge drops it there as usual.
 
-Poofed one by accident? Press `move-column-left` within 2 seconds, and the window comes back exactly where it was, in the same container and at the same size.
+Poofed one by accident? Press `move-column-left` within half a second, and the window comes back exactly where it was, in the same container and at the same size.
 
-Windows on workspace 0 peek out as thin live thumbnails at the right edge of the rightmost output, like a drawer, with the newest on top.
-Hover one to slide it out, click it to bring the window next to the focused one, or drag it out to put it anywhere.
+Windows in limbo peek out as thin, slightly see-through live thumbnails at the right edge of the rightmost output, like a drawer, with the newest on top.
+Hover one to slide it out, lifting off the edge by half a centimetre; click it to bring the window next to the focused one, or drag it out to put it anywhere.
 The drawer hides in the overview and behind a focused fullscreen window.
 
-Like any other workspace, it goes away once it's empty.
-Use `focus-workspace 0` to get to it, and the usual move actions to bring windows back.
+The drawer can also sit on the left or bottom edge.
+The poof gesture and flinging always use the right edge.
+
+```kdl
+limbo {
+    // Where the drawer of windows in limbo sits: "left", "right" (default) or "bottom".
+    edge "bottom"
+}
+```
+
+A window in limbo also comes back next to the focused one when something asks to focus it, like clicking its notification or `niri msg action focus-window`.
+`niri msg windows` still lists windows in limbo, without a workspace.
 
 `niri msg workspaces` and status bars show the workspace number as its index.
 
@@ -251,5 +262,5 @@ A new window opens right after the focused window, in the same container: to its
 ### Differences from i3
 
 - Tabs show as colored bars without window titles.
-- The scratchpad is a normal workspace (workspace 0) rather than i3's floating `scratchpad show`.
+- Instead of i3's scratchpad there's [limbo](#limbo), a hidden place you send windows to with a gesture and get them back from with a drawer at the screen edge.
 - There are no marks or i3 IPC compatibility.

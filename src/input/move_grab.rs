@@ -23,12 +23,12 @@ use crate::input::AnyStartData;
 use crate::niri::State;
 
 /// How close to the right edge of the output, in logical pixels, a dragged window has to be let
-/// go of to fling it to the scratchpad.
+/// go of to fling it to limbo.
 const FLING_EDGE: f64 = 4.;
 /// How fast, in logical pixels per second, it has to be moving to the right.
 const FLING_VELOCITY: f64 = 1500.;
 
-/// Whether letting go of a dragged window here, moving this fast, flings it to the scratchpad.
+/// Whether letting go of a dragged window here, moving this fast, flings it to limbo.
 fn is_fling(pointer_x_in_output: f64, output_width: f64, velocity: f64) -> bool {
     pointer_x_in_output >= output_width - FLING_EDGE && velocity >= FLING_VELOCITY
 }
@@ -117,7 +117,7 @@ impl MoveGrab {
                 layout.activate_window(&self.window);
             }
             GestureState::Move => {
-                // Thrown at the right edge: off to the scratchpad.
+                // Thrown at the right edge: off to limbo.
                 let fling = data
                     .niri
                     .output_under(self.last_location)
@@ -126,9 +126,8 @@ impl MoveGrab {
                         let width = crate::utils::output_size(output).w;
                         is_fling(pos.x, width, self.tracker.velocity())
                     });
-                let flung = fling.is_some_and(|(output, pos)| {
-                    data.fling_to_scratchpad(&self.window, &output, pos.y)
-                });
+                let flung = fling
+                    .is_some_and(|(output, pos)| data.fling_to_limbo(&self.window, &output, pos.y));
                 if !flung {
                     data.niri.layout.interactive_move_end(&self.window);
                 }

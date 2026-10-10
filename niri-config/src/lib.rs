@@ -37,6 +37,7 @@ pub mod gestures;
 pub mod input;
 pub mod layer_rule;
 pub mod layout;
+pub mod limbo;
 pub mod misc;
 pub mod output;
 pub mod recent_windows;
@@ -53,6 +54,7 @@ pub use crate::gestures::Gestures;
 pub use crate::input::{Input, ModKey, ScrollMethod, TrackLayout, WarpMouseToFocusMode, Xkb};
 pub use crate::layer_rule::LayerRule;
 pub use crate::layout::*;
+pub use crate::limbo::{Limbo, LimboEdge};
 pub use crate::misc::*;
 pub use crate::output::{Output, OutputLayoutPart, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
@@ -92,6 +94,7 @@ pub struct Config {
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
     pub recent_windows: RecentWindows,
+    pub limbo: Limbo,
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +202,7 @@ where
                 "cursor" => m_merge!(cursor),
                 "clipboard" => m_merge!(clipboard),
                 "hotkey-overlay" => m_merge!(hotkey_overlay),
+                "limbo" => m_merge!(limbo),
                 "config-notification" => m_merge!(config_notification),
                 "animations" => m_merge!(animations),
                 "blur" => m_merge!(blur),
@@ -675,8 +679,9 @@ mod tests {
         let parsed = do_parse(r#"layout { layout-mode "i3"; }"#);
         assert_eq!(parsed.layout.layout_mode, LayoutMode::I3);
 
+        // i3 is the default.
         let parsed = do_parse("");
-        assert_eq!(parsed.layout.layout_mode, LayoutMode::Scrolling);
+        assert_eq!(parsed.layout.layout_mode, LayoutMode::I3);
 
         // layout-mode can only be set globally.
         assert!(Config::parse_mem(r#"output "DP-1" { layout { layout-mode "i3"; } }"#).is_err());
@@ -769,6 +774,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_limbo() {
+        assert_eq!(do_parse("").limbo.edge, LimboEdge::Right);
+        assert_eq!(
+            do_parse(r#"limbo { edge "bottom"; }"#).limbo.edge,
+            LimboEdge::Bottom
+        );
+        assert_eq!(
+            do_parse(r#"limbo { edge "left"; }"#).limbo.edge,
+            LimboEdge::Left
+        );
+        assert!(Config::parse_mem(r#"limbo { edge "up"; }"#).is_err());
+    }
+
+    #[test]
     fn parse_resize_mode() {
         let parsed = do_parse(
             r#"
@@ -778,32 +797,6 @@ mod tests {
             "#,
         );
         assert_eq!(parsed.binds.0[0].action, Action::ResizeMode);
-    }
-
-    #[test]
-    fn parse_pushaway() {
-        assert!(do_parse("").layout.pushaway);
-        assert!(!do_parse("layout { pushaway false; }").layout.pushaway);
-        assert!(Config::parse_mem(r#"output "DP-1" { layout { pushaway false; } }"#).is_err());
-        assert!(Config::parse_mem(r#"workspace "a" { layout { pushaway false; } }"#).is_err());
-
-        // focus is optional on move actions: unset means "go by pushaway".
-        let parsed = do_parse(
-            r#"
-            binds {
-                Mod+1 { move-window-to-workspace 1; }
-                Mod+2 { move-window-to-workspace 2 focus=true; }
-            }
-            "#,
-        );
-        assert_eq!(
-            parsed.binds.0[0].action,
-            Action::MoveWindowToWorkspace(WorkspaceReference::Index(1), None)
-        );
-        assert_eq!(
-            parsed.binds.0[1].action,
-            Action::MoveWindowToWorkspace(WorkspaceReference::Index(2), Some(true))
-        );
     }
 
     #[test]
@@ -1650,7 +1643,7 @@ mod tests {
                 always_center_single_column: false,
                 empty_workspace_above_first: false,
                 positional_workspaces: false,
-                layout_mode: Scrolling,
+                layout_mode: I3,
                 pushaway: true,
                 default_column_display: Tabbed,
                 gaps: 8.0,
@@ -2596,6 +2589,9 @@ mod tests {
                         hotkey_overlay_title: None,
                     },
                 ],
+            },
+            limbo: Limbo {
+                edge: Right,
             },
         }
         "#);

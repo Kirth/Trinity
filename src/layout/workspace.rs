@@ -2364,7 +2364,7 @@ impl<W: LayoutElement> Workspace<W> {
             .start_fly_off_animation_for_tile(renderer, snapshot, tile_size, tile_pos, distance);
     }
 
-    /// Drops the windows flying off to the scratchpad.
+    /// Drops the windows flying off to limbo.
     pub fn cancel_fly_offs(&mut self) {
         self.floating.cancel_fly_offs();
         if let Some(tiling) = &mut self.tiling {

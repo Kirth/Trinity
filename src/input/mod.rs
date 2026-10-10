@@ -7,7 +7,7 @@ use calloop::timer::{TimeoutAction, Timer};
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
     Action, Bind, Binds, Config, Key, LayoutMode, ModKey, Modifiers, MruDirection, SwitchBinds,
-    Trigger, WorkspaceReference,
+    Trigger,
 };
 use niri_ipc::{ContainerLayout, LayoutSwitchTarget, SplitDirection};
 use smithay::backend::input::{
@@ -76,9 +76,9 @@ pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 /// Presses of move-right against the right edge, in quick succession, that poof the window away.
 const POOF_PRESSES: u8 = 3;
 /// How long after a poof move-left puts the window back.
-const POOF_UNDO_TIME: Duration = Duration::from_secs(2);
+const POOF_UNDO_TIME: Duration = Duration::from_millis(500);
 
-/// A window poofed away to the scratchpad, with where it was, to put it back.
+/// A window poofed away to limbo, with where it was, to put it back.
 #[derive(Debug)]
 pub struct PoofUndo {
     window: smithay::desktop::Window,
@@ -698,17 +698,9 @@ impl State {
     }
 
     /// Handles move-right hitting the right edge: pressing it three times in quick succession
-    /// sends the window to the scratchpad, workspace 0.
+    /// sends the window to limbo.
     fn move_right_at_edge(&mut self) {
         if !self.niri.layout.is_i3() || self.niri.in_key_repeat {
-            return;
-        }
-        if self
-            .niri
-            .layout
-            .active_workspace()
-            .is_some_and(|ws| ws.number() == Some(0))
-        {
             return;
         }
         let Some(mapped) = self.niri.layout.focus() else {
@@ -727,18 +719,14 @@ impl State {
             _ => 1,
         };
         if presses >= POOF_PRESSES {
-            self.poof_to_scratchpad(&window, id);
+            self.poof_to_limbo(&window);
         } else {
             self.niri.edge_move_right = Some((now, id, presses));
         }
     }
 
-    /// Sends a window to workspace 0, flying off the right edge of the screen.
-    fn poof_to_scratchpad(
-        &mut self,
-        window: &smithay::desktop::Window,
-        id: crate::window::mapped::MappedId,
-    ) {
+    /// Sends a window to limbo, flying off the right edge of the screen.
+    fn poof_to_limbo(&mut self, window: &smithay::desktop::Window) {
         let origin = self.niri.layout.tiling_place(window);
         // The focused window is on the active output.
         let output = self.niri.layout.active_output().cloned();
@@ -755,21 +743,11 @@ impl State {
                 .start_fly_off_animation_for_window(renderer, window);
         });
 
-        self.do_action(
-            Action::MoveWindowToWorkspaceById {
-                window_id: id.get(),
-                reference: WorkspaceReference::Index(0),
-                focus: Some(false),
-            },
-            false,
-        );
+        let moved = self.niri.layout.move_to_limbo(window);
+        self.niri.layout.clean_up_i3_workspaces();
+        self.niri.queue_redraw_all();
 
-        // Puff of smoke where the window leaves the screen, if it did make it to workspace 0.
-        let moved = self
-            .niri
-            .layout
-            .workspaces()
-            .any(|(_, _, ws)| ws.number() == Some(0) && ws.has_window(window));
+        // Puff of smoke where the window leaves the screen, if it did go to limbo.
         if let (true, Some(output), Some(rect)) = (moved, output, rect) {
             let width = crate::utils::output_size(&output).w;
             let puff = Point::from((width - 10., rect.loc.y + rect.size.h / 2.));
@@ -781,43 +759,20 @@ impl State {
         }
     }
 
-    /// Ends dragging a window by sending it to the scratchpad, flying off the right edge.
+    /// Ends dragging a window by sending it to limbo, flying off the right edge.
     ///
     /// Returns `false` if it couldn't, and the drag should end as usual.
-    pub(crate) fn fling_to_scratchpad(
+    pub(crate) fn fling_to_limbo(
         &mut self,
         window: &smithay::desktop::Window,
         output: &Output,
         pointer_y_in_output: f64,
     ) -> bool {
-        if !self.niri.layout.is_i3()
-            || self
-                .niri
-                .layout
-                .active_workspace()
-                .is_some_and(|ws| ws.number() == Some(0))
-        {
+        if !self.niri.layout.is_i3() {
             return false;
         }
 
         let origin = self.niri.layout.interactive_move_origin(window);
-
-        if self
-            .niri
-            .find_or_create_output_and_workspace_index(WorkspaceReference::Index(0))
-            .is_none()
-        {
-            return false;
-        }
-        let Some(ws_id) = self
-            .niri
-            .layout
-            .workspaces()
-            .find(|(_, _, ws)| ws.number() == Some(0))
-            .map(|(_, _, ws)| ws.id())
-        else {
-            return false;
-        };
 
         self.niri.layout.clear_unmap_snapshot(window);
         self.store_unmap_snapshot(window, Some(output));
@@ -827,13 +782,8 @@ impl State {
                 .start_fly_off_animation_for_window(renderer, window);
         });
 
-        if !self
-            .niri
-            .layout
-            .interactive_move_end_to_workspace(window, ws_id)
-        {
+        if !self.niri.layout.interactive_move_end_to_limbo(window) {
             self.niri.layout.cancel_fly_offs();
-            self.niri.layout.clean_up_i3_workspaces();
             return false;
         }
         self.niri.layout.clean_up_i3_workspaces();
@@ -848,7 +798,7 @@ impl State {
         true
     }
 
-    /// Updates which card in the scratchpad drawer is under the pointer.
+    /// Updates which card in the limbo drawer is under the pointer.
     fn update_drawer_hover(&mut self, pos: Point<f64, Logical>) {
         let pointer = self.niri.seat.get_pointer().unwrap();
         let hit = if pointer.is_grabbed() {
@@ -879,7 +829,7 @@ impl State {
         }
     }
 
-    /// Takes a window out of the scratchpad drawer and puts it next to the focused window on the
+    /// Takes a window out of the limbo drawer and puts it next to the focused window on the
     /// active workspace of this output, focused.
     pub(crate) fn pull_from_drawer(
         &mut self,
@@ -903,7 +853,6 @@ impl State {
             .layout
             .restore_window_to_place(&window, ws_id, None);
         self.niri.layout.clean_up_i3_workspaces();
-        self.niri.drawer.forget(id);
         if self
             .niri
             .poof_undo
@@ -932,15 +881,6 @@ impl State {
                 None => return,
             },
         };
-        if let Some(mapped) = self
-            .niri
-            .layout
-            .windows()
-            .find(|(_, m)| m.window == *window)
-        {
-            let id = mapped.1.id();
-            self.niri.drawer.remember(id);
-        }
         self.niri.poof_undo = Some(PoofUndo {
             window: window.clone(),
             at: self.niri.clock.now_unadjusted(),
@@ -965,12 +905,7 @@ impl State {
         if self.niri.layout.active_workspace().map(|ws| ws.id()) != Some(undo.workspace) {
             return false;
         }
-        let in_scratchpad = self
-            .niri
-            .layout
-            .workspaces()
-            .any(|(_, _, ws)| ws.number() == Some(0) && ws.has_window(&undo.window));
-        if !in_scratchpad {
+        if !self.niri.layout.is_in_limbo(&undo.window) {
             return false;
         }
 
@@ -3304,7 +3239,7 @@ impl State {
                 }
             }
 
-            // A press on a card in the scratchpad drawer pulls its window out: a click brings it
+            // A press on a card in the limbo drawer pulls its window out: a click brings it
             // next to the focused window, a drag moves it.
             if button == Some(MouseButton::Left) && !is_mru_open && !pointer.is_grabbed() {
                 let location = pointer.current_location();

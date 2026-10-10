@@ -1,4 +1,4 @@
-//! A puff of smoke where a window poofs away to the scratchpad.
+//! A puff of smoke where a window poofs away to limbo.
 //!
 //! It's timed by itself rather than by an `Animation`, so it plays even with animations turned
 //! off.

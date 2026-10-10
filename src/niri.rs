@@ -16,7 +16,7 @@ use calloop::futures::Scheduler;
 use niri_config::debug::PreviewRender;
 use niri_config::output::MaxBpc;
 use niri_config::{
-    Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
+    Config, FloatOrInt, Key, LimboEdge, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
     WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
@@ -176,7 +176,7 @@ use crate::render_helpers::{
 use crate::screencasting::Screencasting;
 use crate::ui::ace_hints::{AceHints, HintOutcome, GHOST_ALPHA};
 use crate::ui::config_error_notification::ConfigErrorNotification;
-use crate::ui::drawer::{Drawer, DrawerRenderElement};
+use crate::ui::drawer::{Drawer, DrawerPlacement, DrawerRenderElement, MARGIN_MM};
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
@@ -354,9 +354,9 @@ pub struct Niri {
     /// Whether the bind being handled comes from key repeat.
     pub in_key_repeat: bool,
     /// When and for which window move-right last hit the right edge, and how many times in a
-    /// row, for the scratchpad poof.
+    /// row, for the limbo poof.
     pub edge_move_right: Option<(Duration, MappedId, u8)>,
-    /// The last window poofed away to the scratchpad, to put it back with move-left.
+    /// The last window poofed away to limbo, to put it back with move-left.
     pub poof_undo: Option<PoofUndo>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
@@ -579,7 +579,7 @@ pub struct PointContents {
     pub layer: Option<LayerSurface>,
     // Pointer is over a hot corner.
     pub hot_corner: bool,
-    // Pointer is over this window's card in the scratchpad drawer.
+    // Pointer is over this window's card in the limbo drawer.
     pub drawer: Option<MappedId>,
 }
 
@@ -3661,7 +3661,7 @@ impl Niri {
                 .map(mapped_hit_data)
         };
 
-        // The scratchpad drawer is drawn above everything below.
+        // The limbo drawer is drawn above everything below.
         if let Some(id) = self.drawer_window_under(output, pos_within_output) {
             rv.drawer = Some(id);
             return rv;
@@ -4350,13 +4350,8 @@ impl Niri {
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
         self.poof.advance_animations(self.clock.now());
-        let scratchpad: Vec<_> = self
-            .layout
-            .workspaces()
-            .find(|(_, _, ws)| ws.number() == Some(0))
-            .map(|(_, _, ws)| ws.windows().map(|mapped| mapped.id()).collect())
-            .unwrap_or_default();
-        self.drawer.sync(&scratchpad);
+        let limbo: Vec<_> = self.layout.limbo_windows().map(|m| m.id()).collect();
+        self.drawer.sync(&limbo);
         self.drawer.advance_animations(self.clock.now());
 
         for state in self.output_state.values_mut() {
@@ -4583,7 +4578,7 @@ impl Niri {
             push(element.into());
         }
 
-        // Then, the puffs of windows poofed away to the scratchpad.
+        // Then, the puffs of windows poofed away to limbo.
         self.poof.render(
             ctx.renderer,
             output,
@@ -4592,13 +4587,14 @@ impl Niri {
             &mut |elem| push(elem.into()),
         );
 
-        // Then, the scratchpad drawer.
+        // Then, the limbo drawer.
         let drawer_windows = self.drawer_windows(output);
         if !drawer_windows.is_empty() {
             self.drawer.render(
                 ctx.r(),
                 output_size(output),
                 &drawer_windows,
+                self.drawer_placement(output),
                 output.current_scale().fractional_scale(),
                 &mut |elem| push(elem.into()),
             );
@@ -6642,7 +6638,7 @@ impl Niri {
         rv
     }
 
-    /// Windows in the scratchpad drawer shown on this output, in drawer order.
+    /// Windows in limbo, shown in the drawer on this output, newest first.
     ///
     /// The drawer shows at the right edge of outputs with nothing to their right, in i3 mode,
     /// unless the overview is open or a focused fullscreen window covers the output.
@@ -6650,7 +6646,13 @@ impl Niri {
         if !self.layout.is_i3() || self.layout.is_overview_open() {
             return Vec::new();
         }
-        if self.output_right_of(output).is_some() {
+        // The drawer sits on the outer edge of the outputs.
+        let neighbour = match self.config.borrow().limbo.edge {
+            LimboEdge::Left => self.output_left_of(output),
+            LimboEdge::Right => self.output_right_of(output),
+            LimboEdge::Bottom => self.output_down_of(output),
+        };
+        if neighbour.is_some() {
             return Vec::new();
         }
         let Some(mon) = self.layout.monitor_for_output(output) else {
@@ -6659,24 +6661,26 @@ impl Niri {
         if mon.render_above_top_layer() {
             return Vec::new();
         }
-        let Some((_, _, ws)) = self
-            .layout
-            .workspaces()
-            .find(|(_, _, ws)| ws.number() == Some(0))
-        else {
-            return Vec::new();
-        };
+        self.layout.limbo_windows().collect()
+    }
 
-        let mut windows: Vec<&Mapped> = ws.windows().collect();
-        let order = self.drawer.order();
-        // Windows the drawer doesn't know about yet go last, until the next sync.
-        windows.sort_by_key(|mapped| {
-            order
-                .iter()
-                .position(|id| *id == mapped.id())
-                .unwrap_or(usize::MAX)
-        });
-        windows
+    /// Where the limbo drawer goes on this output.
+    pub fn drawer_placement(&self, output: &Output) -> DrawerPlacement {
+        let edge = self.config.borrow().limbo.edge;
+
+        // Turn the margin from millimetres into logical pixels, using the physical size of the
+        // output when it's known, and 96 dpi otherwise.
+        let scale = output.current_scale().fractional_scale();
+        let width_mm = output.physical_properties().size.w;
+        let width_px = output.current_mode().map_or(0, |mode| mode.size.w);
+        let px_per_mm = if width_mm > 0 && width_px > 0 {
+            f64::from(width_px) / f64::from(width_mm)
+        } else {
+            96. / 25.4 * scale
+        };
+        let margin = MARGIN_MM * px_per_mm / scale;
+
+        DrawerPlacement { edge, margin }
     }
 
     /// The window whose drawer card is under this point, in output-local coordinates.
@@ -6693,8 +6697,12 @@ impl Niri {
             .iter()
             .map(|mapped| (mapped.id(), crate::ui::drawer::window_size(mapped)))
             .collect();
-        self.drawer
-            .window_under(output_size(output), &items, pos_within_output)
+        self.drawer.window_under(
+            output_size(output),
+            &items,
+            self.drawer_placement(output),
+            pos_within_output,
+        )
     }
 
     /// Labeled windows on this output hidden behind a fullscreen or maximized window on their
