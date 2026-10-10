@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use glam::{Mat3, Vec2};
@@ -14,7 +15,7 @@ use smithay::backend::renderer::Texture;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::compositor::{Blocker, BlockerState};
 
-use crate::animation::Animation;
+use crate::animation::{Animation, Clock};
 use crate::niri_render_elements;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::shader_element::ShaderRenderElement;
@@ -61,6 +62,34 @@ pub struct ClosingWindow {
 
     /// Random seed for the shader.
     random_seed: f32,
+
+    /// If set, the window flies off to the right instead of playing the close animation.
+    fly_off: Option<FlyOff>,
+}
+
+/// How long the fly-off takes. It plays even with animations turned off.
+const FLY_OFF_DURATION: Duration = Duration::from_millis(350);
+
+/// A window flying off to the right, timed by itself rather than by an [`Animation`], so that it
+/// plays even with animations turned off.
+#[derive(Debug)]
+struct FlyOff {
+    distance: f64,
+    clock: Clock,
+    start: Duration,
+}
+
+impl FlyOff {
+    /// Progress from 0 to 1, easing out.
+    fn progress(&self) -> f64 {
+        let elapsed = self.clock.now().saturating_sub(self.start);
+        let t = (elapsed.as_secs_f64() / FLY_OFF_DURATION.as_secs_f64()).clamp(0., 1.);
+        1. - (1. - t).powi(3)
+    }
+
+    fn is_done(&self) -> bool {
+        self.clock.now().saturating_sub(self.start) >= FLY_OFF_DURATION
+    }
 }
 
 niri_render_elements! {
@@ -154,7 +183,19 @@ impl ClosingWindow {
             blocked_out_buffer_offset,
             anim_state: AnimationState::new(blocker, anim),
             random_seed: fastrand::f32(),
+            fly_off: None,
         })
+    }
+
+    /// Makes the window fly `distance` to the right instead of playing the close animation.
+    pub fn with_fly_off(mut self, distance: f64, clock: Clock) -> Self {
+        let start = clock.now();
+        self.fly_off = Some(FlyOff {
+            distance,
+            clock,
+            start,
+        });
+        self
     }
 
     pub fn advance_animations(&mut self) {
@@ -170,6 +211,10 @@ impl ClosingWindow {
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
+        if let Some(fly_off) = &self.fly_off {
+            return !fly_off.is_done();
+        }
+
         match &self.anim_state {
             AnimationState::Waiting { .. } => true,
             AnimationState::Animating(anim) => !anim.is_done(),
@@ -192,6 +237,31 @@ impl ClosingWindow {
         } else {
             (&self.buffer, self.buffer_offset)
         };
+
+        if let Some(fly_off) = &self.fly_off {
+            let progress = fly_off.progress();
+            // Slide right without shrinking, fading out over the last part of the way.
+            let alpha = ((1. - progress) / 0.3).min(1.);
+            let elem = TextureRenderElement::from_texture_buffer(
+                buffer.clone(),
+                Point::from((0., 0.)),
+                alpha as f32,
+                None,
+                None,
+                Kind::Unspecified,
+            );
+            let elem = PrimaryGpuTextureRenderElement(elem);
+            let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), 1.);
+
+            let mut location = self.pos + offset;
+            location.x += fly_off.distance * progress - view_rect.loc.x;
+            let elem = RelocateRenderElement::from_element(
+                elem,
+                location.to_physical_precise_round(scale),
+                Relocate::Relative,
+            );
+            return elem.into();
+        }
 
         let anim = match &self.anim_state {
             AnimationState::Waiting { .. } => {

@@ -7,7 +7,7 @@ use calloop::timer::{TimeoutAction, Timer};
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
     Action, Bind, Binds, Config, Key, LayoutMode, ModKey, Modifiers, MruDirection, SwitchBinds,
-    Trigger,
+    Trigger, WorkspaceReference,
 };
 use niri_ipc::{ContainerLayout, LayoutSwitchTarget, SplitDirection};
 use smithay::backend::input::{
@@ -73,6 +73,8 @@ pub mod touch_overview_grab;
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 
 pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
+/// Presses of move-right against the right edge, in quick succession, that poof the window away.
+const POOF_PRESSES: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
@@ -681,6 +683,86 @@ impl State {
         })
     }
 
+    /// Handles move-right hitting the right edge: pressing it three times in quick succession
+    /// sends the window to the scratchpad, workspace 0.
+    fn move_right_at_edge(&mut self) {
+        if !self.niri.layout.is_i3() || self.niri.in_key_repeat {
+            return;
+        }
+        if self
+            .niri
+            .layout
+            .active_workspace()
+            .is_some_and(|ws| ws.number() == Some(0))
+        {
+            return;
+        }
+        let Some(mapped) = self.niri.layout.focus() else {
+            return;
+        };
+        let id = mapped.id();
+        let window = mapped.window.clone();
+
+        let now = self.niri.clock.now_unadjusted();
+        let presses = match self.niri.edge_move_right.take() {
+            Some((last, last_id, presses))
+                if last_id == id && now.saturating_sub(last) <= DOUBLE_CLICK_TIME =>
+            {
+                presses + 1
+            }
+            _ => 1,
+        };
+        if presses >= POOF_PRESSES {
+            self.poof_to_scratchpad(&window, id);
+        } else {
+            self.niri.edge_move_right = Some((now, id, presses));
+        }
+    }
+
+    /// Sends a window to workspace 0, flying off the right edge of the screen.
+    fn poof_to_scratchpad(
+        &mut self,
+        window: &smithay::desktop::Window,
+        id: crate::window::mapped::MappedId,
+    ) {
+        // The focused window is on the active output.
+        let output = self.niri.layout.active_output().cloned();
+        let rect = self
+            .niri
+            .layout
+            .active_monitor_ref()
+            .and_then(|mon| mon.active_window_visual_rectangle());
+        self.niri.layout.clear_unmap_snapshot(window);
+        self.store_unmap_snapshot(window, output.as_ref());
+        self.backend.with_primary_renderer(|renderer| {
+            self.niri
+                .layout
+                .start_fly_off_animation_for_window(renderer, window);
+        });
+
+        self.do_action(
+            Action::MoveWindowToWorkspaceById {
+                window_id: id.get(),
+                reference: WorkspaceReference::Index(0),
+                focus: Some(false),
+            },
+            false,
+        );
+
+        // Puff of smoke where the window leaves the screen, if it did make it to workspace 0.
+        let moved = self
+            .niri
+            .layout
+            .workspaces()
+            .any(|(_, _, ws)| ws.number() == Some(0) && ws.has_window(window));
+        if let (true, Some(output), Some(rect)) = (moved, output, rect) {
+            let width = crate::utils::output_size(&output).w;
+            let origin = Point::from((width - 10., rect.loc.y + rect.size.h / 2.));
+            let now = self.niri.clock.now();
+            self.niri.poof.spawn(output, origin, now);
+        }
+    }
+
     fn start_key_repeat(&mut self, bind: Bind) {
         if !bind.repeat {
             return;
@@ -707,7 +789,9 @@ impl State {
             .niri
             .event_loop
             .insert_source(repeat_timer, move |_, _, state| {
+                state.niri.in_key_repeat = true;
                 state.handle_bind(bind.clone());
+                state.niri.in_key_repeat = false;
                 TimeoutAction::ToDuration(repeat_duration)
             })
             .unwrap();
@@ -1026,9 +1110,11 @@ impl State {
             Action::MoveColumnRight => {
                 if self.niri.screenshot_ui.is_open() {
                     self.niri.screenshot_ui.move_right();
-                } else {
-                    self.niri.layout.move_right();
+                } else if self.niri.layout.move_right() {
+                    self.niri.edge_move_right = None;
                     self.maybe_warp_cursor_to_focus();
+                } else {
+                    self.move_right_at_edge();
                 }
 
                 // FIXME: granular

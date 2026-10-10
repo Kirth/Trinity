@@ -1156,7 +1156,9 @@ impl Op {
             Op::FocusWindowDownOrTop => layout.focus_window_down_or_top(),
             Op::FocusWindowUpOrBottom => layout.focus_window_up_or_bottom(),
             Op::MoveColumnLeft => layout.move_left(),
-            Op::MoveColumnRight => layout.move_right(),
+            Op::MoveColumnRight => {
+                layout.move_right();
+            }
             Op::MoveColumnToFirst => layout.move_column_to_first(),
             Op::MoveColumnToLast => layout.move_column_to_last(),
             Op::MoveColumnLeftOrToMonitorLeft(id) => {

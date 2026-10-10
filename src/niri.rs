@@ -147,7 +147,7 @@ use crate::input::{
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
 use crate::layer::MappedLayer;
-use crate::layout::tile::TileRenderElement;
+use crate::layout::tile::{Tile, TileRenderElement};
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
@@ -174,11 +174,12 @@ use crate::render_helpers::{
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
-use crate::ui::ace_hints::{AceHints, HintOutcome};
+use crate::ui::ace_hints::{AceHints, HintOutcome, GHOST_ALPHA};
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
+use crate::ui::poof::Poof;
 use crate::ui::resize_mode::ResizeMode;
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
@@ -349,6 +350,11 @@ pub struct Niri {
     pub suppressed_buttons: HashSet<u32>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
+    /// Whether the bind being handled comes from key repeat.
+    pub in_key_repeat: bool,
+    /// When and for which window move-right last hit the right edge, and how many times in a
+    /// row, for the scratchpad poof.
+    pub edge_move_right: Option<(Duration, MappedId, u8)>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
@@ -412,6 +418,7 @@ pub struct Niri {
     pub hotkey_overlay: HotkeyOverlay,
     pub exit_confirm_dialog: ExitConfirmDialog,
     pub ace_hints: AceHints,
+    pub poof: Poof,
     pub resize_mode: ResizeMode,
 
     pub window_mru_ui: WindowMruUi,
@@ -2789,6 +2796,8 @@ impl Niri {
             suppressed_buttons: HashSet::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
+            in_key_repeat: false,
+            edge_move_right: None,
             presentation_state,
             security_context_state,
             gamma_control_manager_state,
@@ -2837,6 +2846,7 @@ impl Niri {
             hotkey_overlay,
             exit_confirm_dialog,
             ace_hints: AceHints::new(),
+            poof: Poof::new(),
             resize_mode: ResizeMode::new(),
 
             window_mru_ui,
@@ -4325,6 +4335,7 @@ impl Niri {
         self.exit_confirm_dialog.advance_animations();
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
+        self.poof.advance_animations(self.clock.now());
 
         for state in self.output_state.values_mut() {
             if let Some(transition) = &mut state.screen_transition {
@@ -4550,6 +4561,15 @@ impl Niri {
             push(element.into());
         }
 
+        // Then, the puffs of windows poofed away to the scratchpad.
+        self.poof.render(
+            ctx.renderer,
+            output,
+            output.current_scale().fractional_scale(),
+            self.clock.now(),
+            &mut |elem| push(elem.into()),
+        );
+
         // Then, the window hints.
         if self.ace_hints.is_open() {
             let scale = output.current_scale().fractional_scale();
@@ -4558,6 +4578,13 @@ impl Niri {
                 .render(ctx.renderer, scale, windows.into_iter(), &mut |elem| {
                     push(elem.into())
                 });
+
+            // Below the hints, faint copies of the windows hidden behind a fullscreen window.
+            for (tile, loc) in self.ace_hint_ghosts(output) {
+                tile.render_ghost(ctx.r(), loc, GHOST_ALPHA, &mut |elem| {
+                    push(OutputRenderElements::Tile(elem))
+                });
+            }
         }
 
         // Then, the resize mode label.
@@ -4888,6 +4915,7 @@ impl Niri {
             state.unfinished_animations_remain |= self.exit_confirm_dialog.are_animations_ongoing();
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
+            state.unfinished_animations_remain |= self.poof.are_animations_ongoing(output);
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
             // Also keep redrawing if the current cursor is animated.
@@ -6579,6 +6607,44 @@ impl Niri {
         rv
     }
 
+    /// Labeled windows on this output hidden behind a fullscreen or maximized window on their
+    /// workspace, with their top-left corner in output-local logical coordinates.
+    pub fn ace_hint_ghosts(&self, output: &Output) -> Vec<(&Tile<Mapped>, Point<f64, Logical>)> {
+        let Some(mon) = self.layout.monitor_for_output(output) else {
+            return Vec::new();
+        };
+
+        let mut rv = Vec::new();
+        for (ws, ws_geo) in mon.workspaces_with_render_geo() {
+            // Fullscreen and maximized tiles are drawn above the other tiled windows. Floating
+            // windows are drawn above maximized tiles, and hidden by a focused fullscreen one.
+            let tiled = || {
+                ws.tiles_with_render_positions()
+                    .filter(|(tile, _, visible)| {
+                        *visible && !ws.is_floating(crate::layout::LayoutElement::id(tile.window()))
+                    })
+            };
+            let covers: Vec<_> = tiled()
+                .filter(|(tile, _, _)| !tile.sizing_mode().is_normal())
+                .map(|(tile, pos, _)| Rectangle::new(pos, tile.tile_size()))
+                .collect();
+            if covers.is_empty() {
+                continue;
+            }
+
+            for (tile, pos, _) in tiled() {
+                let rect = Rectangle::new(pos, tile.tile_size());
+                if tile.sizing_mode().is_normal()
+                    && covers.iter().any(|cover| cover.overlaps(rect))
+                    && self.ace_hints.label_for(tile.window().id()).is_some()
+                {
+                    rv.push((tile, ws_geo.loc + pos));
+                }
+            }
+        }
+        rv
+    }
+
     /// Area that resize mode acts on, if it's on this output, in output-local coordinates.
     pub fn resize_mode_target(&self, output: &Output) -> Option<Rectangle<f64, Logical>> {
         if self.layout.active_output() != Some(output) {
@@ -7287,6 +7353,7 @@ niri_render_elements! {
 niri_render_elements! {
     OutputRenderElements<R> => {
         Monitor = MonitorRenderElement<R>,
+        Tile = TileRenderElement<R>,
         RescaledTile = RescaleRenderElement<TileRenderElement<R>>,
         LayerSurface = LayerSurfaceRenderElement<R>,
         RelocatedLayerSurface = CropRenderElement<RelocateRenderElement<RescaleRenderElement<

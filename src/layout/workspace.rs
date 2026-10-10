@@ -2336,6 +2336,20 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Starts an animation of a tiled window flying off the right edge, in i3 mode.
+    pub fn start_fly_off_animation_for_window(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &W::Id,
+    ) {
+        if self.floating.has_window(window) {
+            return;
+        }
+        if let Some(tiling) = &mut self.tiling {
+            tiling.start_fly_off_animation_for_window(renderer, window);
+        }
+    }
+
     pub fn start_close_animation_for_tile(
         &mut self,
         renderer: &mut GlesRenderer,

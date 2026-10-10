@@ -222,6 +222,70 @@ fn hints_focus_typed_window() {
     assert_eq!(focused_id(&mut f), Some(ids[0]));
 }
 
+#[test]
+fn hints_show_ghosts_of_windows_behind_fullscreen() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    let third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    let output = f.niri_output(1);
+
+    // Without a fullscreen window, nothing is hidden.
+    f.niri_state().open_ace_hints();
+    assert!(f.niri().ace_hint_ghosts(&output).is_empty());
+    f.niri().ace_hints.close();
+
+    // Fullscreen the third window, and let all windows commit their new sizes.
+    f.niri_state()
+        .do_action(niri_config::Action::FullscreenWindow, false);
+    f.double_roundtrip(id);
+    configured_widths(&mut f, id, &[&first, &second, &third]);
+    f.niri_complete_animations();
+
+    // The two windows behind it get a ghost, the fullscreen one doesn't.
+    f.niri_state().open_ace_hints();
+    let ghosts: Vec<_> = f
+        .niri()
+        .ace_hint_ghosts(&output)
+        .into_iter()
+        .map(|(tile, _)| tile.window().id())
+        .collect();
+    assert_eq!(ghosts.len(), 2);
+    assert!(ghosts.contains(&ids[0]));
+    assert!(ghosts.contains(&ids[1]));
+
+    // Closing the hints removes the ghosts, since they need a label.
+    f.niri().ace_hints.close();
+    assert!(f.niri().ace_hint_ghosts(&output).is_empty());
+
+    // Maximized to the edges instead, it hides the other two windows just the same.
+    f.niri_state()
+        .do_action(niri_config::Action::FullscreenWindow, false);
+    f.double_roundtrip(id);
+    configured_widths(&mut f, id, &[&first, &second, &third]);
+    f.niri_complete_animations();
+    f.niri_state()
+        .do_action(niri_config::Action::MaximizeWindowToEdges, false);
+    f.double_roundtrip(id);
+    configured_widths(&mut f, id, &[&first, &second, &third]);
+    f.niri_complete_animations();
+
+    f.niri_state().open_ace_hints();
+    let ghosts: Vec<_> = f
+        .niri()
+        .ace_hint_ghosts(&output)
+        .into_iter()
+        .map(|(tile, _)| tile.window().id())
+        .collect();
+    assert_eq!(ghosts.len(), 2);
+    assert!(ghosts.contains(&ids[0]));
+    assert!(ghosts.contains(&ids[1]));
+}
+
 /// Commits the last configured size of each window, and returns their widths.
 fn configured_widths(f: &mut Fixture, id: ClientId, surfaces: &[&WlSurface]) -> Vec<i32> {
     let widths = surfaces
@@ -389,4 +453,94 @@ fn pushaway_off_follows_the_window() {
     f.niri_state().do_action(move_to_workspace(3, None), false);
     f.double_roundtrip(id);
     assert_eq!(active_workspace_number(&mut f), Some(3));
+}
+
+/// Presses move-right at the given time, in milliseconds.
+fn move_right_at(f: &mut Fixture, msec: u64) {
+    f.niri()
+        .clock
+        .set_unadjusted(std::time::Duration::from_millis(msec));
+    f.niri_state()
+        .do_action(niri_config::Action::MoveColumnRight, false);
+}
+
+fn workspace_number_of(f: &mut Fixture, id: crate::window::mapped::MappedId) -> Option<u8> {
+    let ws = f
+        .niri()
+        .layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.windows().any(|m| m.id() == id))
+        .map(|(_, _, ws)| ws.number());
+    ws.flatten()
+}
+
+#[test]
+fn poof_sends_window_to_workspace_0() {
+    // The puff plays even with animations off.
+    let config = r#"layout { layout-mode "i3"; }; animations { off; }"#;
+    let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    // The second window is focused, at the right edge.
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+
+    // Three presses against the edge in quick succession poof it.
+    move_right_at(&mut f, 1000);
+    move_right_at(&mut f, 1200);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+    assert!(!f.niri().poof.are_animations_ongoing(&output));
+    move_right_at(&mut f, 1400);
+
+    // There's a puff, and it's still going a bit later.
+    assert!(f.niri().poof.are_animations_ongoing(&output));
+    f.niri()
+        .clock
+        .set_unadjusted(std::time::Duration::from_millis(1900));
+    f.niri().advance_animations();
+    assert!(f.niri().poof.are_animations_ongoing(&output));
+    f.double_roundtrip(id);
+
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+    assert_eq!(
+        f.niri().layout.active_workspace().unwrap().number(),
+        Some(1)
+    );
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+}
+
+#[test]
+fn slow_edge_presses_dont_poof() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    // Too far apart.
+    move_right_at(&mut f, 1000);
+    move_right_at(&mut f, 1200);
+    move_right_at(&mut f, 2000);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+
+    // A move that does something in between resets the gesture.
+    move_right_at(&mut f, 3000);
+    move_right_at(&mut f, 3100);
+    f.niri_state()
+        .do_action(niri_config::Action::MoveColumnLeft, false);
+    move_right_at(&mut f, 3200);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+    // That one moved it back to the edge, so these are the first two presses against it.
+    move_right_at(&mut f, 3300);
+    move_right_at(&mut f, 3400);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+    // And the third one poofs it.
+    move_right_at(&mut f, 3500);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
 }

@@ -102,6 +102,9 @@ pub struct Tile<W: LayoutElement> {
     /// The animation of the tile's opacity.
     pub(super) alpha_animation: Option<AlphaAnimation>,
 
+    /// Offscreen buffer for the translucent copy drawn by `render_ghost()`.
+    ghost_offscreen: OffscreenBuffer,
+
     /// Offset during the initial interactive move rubberband.
     pub(super) interactive_move_offset: Point<f64, Logical>,
 
@@ -216,6 +219,7 @@ impl<W: LayoutElement> Tile<W> {
             move_x_animation: None,
             move_y_animation: None,
             alpha_animation: None,
+            ghost_offscreen: OffscreenBuffer::default(),
             interactive_move_offset: Point::from((0., 0.)),
             unmap_snapshot: None,
             rounded_corner_damage: Default::default(),
@@ -1465,6 +1469,39 @@ impl<W: LayoutElement> Tile<W> {
 
         if !pushed {
             self.render_inner(ctx, location, xray_pos, focus_ring, &mut |elem| push(elem));
+        }
+    }
+
+    /// Renders a translucent copy of the tile, faded as a single image.
+    ///
+    /// Unlike the alpha animation, this doesn't set the window's offscreen data: the tile is also
+    /// rendered normally in the same frame, and that copy is the real one.
+    pub fn render_ghost<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        location: Point<f64, Logical>,
+        alpha: f32,
+        push: &mut dyn FnMut(TileRenderElement<R>),
+    ) {
+        let _span = tracy_client::span!("Tile::render_ghost");
+
+        let scale = Scale::from(self.scale);
+        let xray_pos = XrayPos::new(location, 1.);
+
+        let mut ctx = ctx.as_gles();
+        let mut elements = Vec::new();
+        self.render_inner(ctx.r(), Point::new(0., 0.), xray_pos, false, &mut |elem| {
+            elements.push(elem)
+        });
+        match self.ghost_offscreen.render(ctx.renderer, scale, &elements) {
+            Ok((elem, _sync, _data)) => {
+                let offset = elem.offset();
+                let elem = elem.with_alpha(alpha).with_offset(location + offset);
+                push(elem.into());
+            }
+            Err(err) => {
+                warn!("error rendering tile ghost to offscreen: {err:?}");
+            }
         }
     }
 

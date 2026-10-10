@@ -68,6 +68,16 @@ binds {
 
 `pushaway` can only be set in the top-level `layout {}` section, and has no effect in the scrolling layout.
 
+#### Scratchpad
+
+Workspace 0 is the scratchpad: workspaces are never numbered 0 on their own, so it sorts first and only holds the windows you send there.
+To send a window there, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies off the right edge in a puff of smoke and lands on workspace 0.
+Holding the key down doesn't count, and focus stays on the current workspace.
+The fly-off and the puff play even with `animations { off; }`.
+
+Like any other workspace, it goes away once it's empty.
+Use `focus-workspace 0` to get to it, and the usual move actions to bring windows back.
+
 `niri msg workspaces` and status bars show the workspace number as its index.
 
 `empty-workspace-above-first` and `positional-workspaces` have no effect in i3 mode.
@@ -174,6 +184,7 @@ Resize mode also works for floating windows and in the scrolling layout.
 `focus-window-with-hints` shows a hint in a circle at the top-left of every visible window, on all outputs, tiled and floating.
 Type a hint to focus its window: the hints use the keys <kbd>a</kbd> <kbd>s</kbd> <kbd>d</kbd> <kbd>f</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
 With more than seven windows, hints are two keys long, and the first key hides the hints that no longer match.
+Windows hidden behind a fullscreen or maximized window are drawn faintly on top of it while the hints are shown, so you can see which window a hint would bring forward.
 Any other key, <kbd>Escape</kbd> or a click cancels.
 
 ```kdl
@@ -231,4 +242,5 @@ A new window opens right after the focused window, in the same container: to its
 ### Differences from i3
 
 - Tabs show as colored bars without window titles.
-- There are no marks, scratchpad, or i3 IPC compatibility.
+- The scratchpad is a normal workspace (workspace 0) rather than i3's floating `scratchpad show`.
+- There are no marks or i3 IPC compatibility.

@@ -1974,11 +1974,12 @@ impl<W: LayoutElement> Layout<W> {
         workspace.move_left();
     }
 
-    pub fn move_right(&mut self) {
+    /// Returns whether anything moved.
+    pub fn move_right(&mut self) -> bool {
         let Some(workspace) = self.active_workspace_mut() else {
-            return;
+            return false;
         };
-        workspace.move_right();
+        workspace.move_right()
     }
 
     pub fn move_column_to_first(&mut self) {
@@ -5024,6 +5025,19 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
             }
+        }
+    }
+
+    /// Starts an animation of a tiled window flying off the right edge, in i3 mode.
+    ///
+    /// The window's unmap snapshot must be stored beforehand.
+    pub fn start_fly_off_animation_for_window(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &W::Id,
+    ) {
+        if let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) {
+            ws.start_fly_off_animation_for_window(renderer, window);
         }
     }
 

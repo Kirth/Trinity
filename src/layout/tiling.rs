@@ -1500,6 +1500,48 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
     }
 
+    /// Starts an animation of the window flying off the right edge of the view.
+    ///
+    /// The window's unmap snapshot must be stored beforehand.
+    pub fn start_fly_off_animation_for_window(&mut self, renderer: &mut GlesRenderer, id: &W::Id) {
+        let Some(path) = self.root.find(id) else {
+            return;
+        };
+        let Node::Leaf(leaf) = self.root.node_at_mut(&path) else {
+            unreachable!()
+        };
+
+        let tile_pos = leaf.pos + leaf.tile.render_offset();
+        let tile_size = leaf.tile.tile_size();
+        let Some(snapshot) = leaf.tile.take_unmap_snapshot() else {
+            return;
+        };
+
+        // Unused: the fly-off times itself, so that it plays even with animations off.
+        let anim = Animation::new(
+            self.clock.clone(),
+            0.,
+            1.,
+            0.,
+            self.options.animations.window_movement.0,
+        );
+        // Far enough that the window, including its shadow, ends up past the right edge.
+        let distance = self.view_size.w - tile_pos.x + 100.;
+
+        let scale = Scale::from(self.scale);
+        let blocker = TransactionBlocker::completed();
+        let res = ClosingWindow::new(
+            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+        );
+        match res {
+            Ok(closing) => {
+                let closing = closing.with_fly_off(distance, self.clock.clone());
+                self.closing_windows.push(closing);
+            }
+            Err(err) => warn!("error creating a fly-off animation: {err:?}"),
+        }
+    }
+
     pub fn start_close_animation_for_tile(
         &mut self,
         renderer: &mut GlesRenderer,

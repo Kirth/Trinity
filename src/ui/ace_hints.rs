@@ -20,6 +20,8 @@ const RADIUS: f64 = 14.;
 const FILL: [f64; 4] = [0.12, 0.12, 0.12, 0.7];
 /// Offset of the label from the window's top-left corner, in logical pixels.
 pub const LABEL_OFFSET: f64 = 6.;
+/// Opacity of the copies of windows hidden behind a fullscreen window.
+pub const GHOST_ALPHA: f32 = 0.3;
 
 /// Result of pressing a key while the hints are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
