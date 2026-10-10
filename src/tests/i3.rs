@@ -1,6 +1,7 @@
 use client::ClientId;
 use insta::assert_snapshot;
 use niri_config::Config;
+use smithay::utils::Point;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
@@ -543,4 +544,171 @@ fn slow_edge_presses_dont_poof() {
     // And the third one poofs it.
     move_right_at(&mut f, 3500);
     assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+}
+
+/// The i3 tree of the active workspace, as text.
+fn active_tree(f: &mut Fixture) -> String {
+    let ws = f.niri().layout.active_workspace().unwrap();
+    ws.tiling().unwrap().tree_string()
+}
+
+/// Opens 1 | (2 / 3), with 3 focused, and returns the surfaces.
+fn open_nested(f: &mut Fixture, id: ClientId) -> [WlSurface; 3] {
+    let first = open_window(f, id);
+    let second = open_window(f, id);
+    f.niri()
+        .layout
+        .split(crate::layout::tiling::SplitCommand::Vertical);
+    let third = open_window(f, id);
+    configured_widths(f, id, &[&first, &second, &third]);
+    [first, second, third]
+}
+
+fn move_left_at(f: &mut Fixture, msec: u64) {
+    f.niri()
+        .clock
+        .set_unadjusted(std::time::Duration::from_millis(msec));
+    f.niri_state()
+        .do_action(niri_config::Action::MoveColumnLeft, false);
+}
+
+/// Drags a window to the right edge of output 1, and flings it.
+fn fling(f: &mut Fixture, window: &smithay::desktop::Window, msec: u64) -> bool {
+    let output = f.niri_output(1);
+    let niri = f.niri();
+    niri.layout
+        .interactive_move_begin(window.clone(), &output, Point::from((1000., 300.)));
+    niri.layout.interactive_move_update(
+        window,
+        Point::from((919., 0.)),
+        output.clone(),
+        Point::from((1919., 300.)),
+    );
+    assert!(niri.layout.interactive_move_origin(window).is_some());
+
+    f.niri()
+        .clock
+        .set_unadjusted(std::time::Duration::from_millis(msec));
+    f.niri_state().fling_to_scratchpad(window, &output, 300.)
+}
+
+#[test]
+fn undo_poof_restores_place() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _surfaces = open_nested(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+
+    // The first press moves 3 out of its container, to the right edge: 1 | 2 | 3.
+    move_right_at(&mut f, 500);
+    f.double_roundtrip(id);
+    let before = active_tree(&mut f);
+
+    for msec in [1000, 1100, 1200] {
+        move_right_at(&mut f, msec);
+    }
+    assert_eq!(workspace_number_of(&mut f, ids[2]), Some(0));
+    assert_ne!(active_tree(&mut f), before);
+
+    // Move-left right after puts it back in the same place, with the same sizes, focused.
+    move_left_at(&mut f, 1700);
+    f.double_roundtrip(id);
+    assert_eq!(workspace_number_of(&mut f, ids[2]), Some(1));
+    assert_eq!(active_tree(&mut f), before);
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+    // Workspace 0 went away with it.
+    assert!(f
+        .niri()
+        .layout
+        .workspaces()
+        .all(|(_, _, ws)| ws.number() != Some(0)));
+
+    // The undo is used up: another move-left moves as usual.
+    move_left_at(&mut f, 1800);
+    assert_eq!(workspace_number_of(&mut f, ids[2]), Some(1));
+    assert_ne!(active_tree(&mut f), before);
+}
+
+#[test]
+fn late_move_left_doesnt_undo() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    for msec in [1000, 1100, 1200] {
+        move_right_at(&mut f, msec);
+    }
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+    move_left_at(&mut f, 3500);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(0));
+}
+
+#[test]
+fn fling_poofs_dragged_window() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _surfaces = open_nested(&mut f, id);
+    let windows: Vec<_> = f
+        .niri()
+        .layout
+        .windows()
+        .map(|(_, m)| (m.id(), m.window.clone()))
+        .collect();
+    let before = active_tree(&mut f);
+
+    // Fling 2, from inside the vertical container.
+    let (id2, window2) = windows[1].clone();
+    assert!(fling(&mut f, &window2, 1000));
+    assert!(f.niri().poof.are_animations_ongoing(&output));
+    f.double_roundtrip(id);
+    assert_eq!(workspace_number_of(&mut f, id2), Some(0));
+
+    // Move-left puts it back where the drag started.
+    move_left_at(&mut f, 1500);
+    f.double_roundtrip(id);
+    assert_eq!(workspace_number_of(&mut f, id2), Some(1));
+    assert_eq!(active_tree(&mut f), before);
+}
+
+#[test]
+fn undo_recreates_emptied_container() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _surfaces = open_nested(&mut f, id);
+    let windows: Vec<_> = f
+        .niri()
+        .layout
+        .windows()
+        .map(|(_, m)| (m.id(), m.window.clone()))
+        .collect();
+
+    // Fling 2 and 3 one after the other, so the vertical container empties and goes away.
+    let (_, window2) = windows[1].clone();
+    assert!(fling(&mut f, &window2, 1000));
+    f.double_roundtrip(id);
+    let before = active_tree(&mut f);
+    assert!(before.contains("SplitV["), "{before}");
+
+    let (id3, window3) = windows[2].clone();
+    assert!(fling(&mut f, &window3, 5000));
+    f.double_roundtrip(id);
+    assert_eq!(workspace_number_of(&mut f, id3), Some(0));
+    assert!(!active_tree(&mut f).contains("SplitV["));
+
+    // Undo recreates the container around 3.
+    move_left_at(&mut f, 5500);
+    f.double_roundtrip(id);
+    assert_eq!(active_tree(&mut f), before);
 }

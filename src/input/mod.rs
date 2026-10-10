@@ -75,6 +75,20 @@ use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 /// Presses of move-right against the right edge, in quick succession, that poof the window away.
 const POOF_PRESSES: u8 = 3;
+/// How long after a poof move-left puts the window back.
+const POOF_UNDO_TIME: Duration = Duration::from_secs(2);
+
+/// A window poofed away to the scratchpad, with where it was, to put it back.
+#[derive(Debug)]
+pub struct PoofUndo {
+    window: smithay::desktop::Window,
+    /// When it was poofed, in unadjusted clock time.
+    at: Duration,
+    /// The workspace it was on.
+    workspace: crate::layout::workspace::WorkspaceId,
+    /// Where it was in the i3 tree, if it was tiled.
+    place: Option<crate::layout::tiling::TilingPlace>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
@@ -725,6 +739,7 @@ impl State {
         window: &smithay::desktop::Window,
         id: crate::window::mapped::MappedId,
     ) {
+        let origin = self.niri.layout.tiling_place(window);
         // The focused window is on the active output.
         let output = self.niri.layout.active_output().cloned();
         let rect = self
@@ -757,10 +772,139 @@ impl State {
             .any(|(_, _, ws)| ws.number() == Some(0) && ws.has_window(window));
         if let (true, Some(output), Some(rect)) = (moved, output, rect) {
             let width = crate::utils::output_size(&output).w;
-            let origin = Point::from((width - 10., rect.loc.y + rect.size.h / 2.));
+            let puff = Point::from((width - 10., rect.loc.y + rect.size.h / 2.));
             let now = self.niri.clock.now();
-            self.niri.poof.spawn(output, origin, now);
+            self.niri.poof.spawn(output, puff, now);
         }
+        if moved {
+            self.remember_poof(window, origin);
+        }
+    }
+
+    /// Ends dragging a window by sending it to the scratchpad, flying off the right edge.
+    ///
+    /// Returns `false` if it couldn't, and the drag should end as usual.
+    pub(crate) fn fling_to_scratchpad(
+        &mut self,
+        window: &smithay::desktop::Window,
+        output: &Output,
+        pointer_y_in_output: f64,
+    ) -> bool {
+        if !self.niri.layout.is_i3()
+            || self
+                .niri
+                .layout
+                .active_workspace()
+                .is_some_and(|ws| ws.number() == Some(0))
+        {
+            return false;
+        }
+
+        let origin = self.niri.layout.interactive_move_origin(window);
+
+        if self
+            .niri
+            .find_or_create_output_and_workspace_index(WorkspaceReference::Index(0))
+            .is_none()
+        {
+            return false;
+        }
+        let Some(ws_id) = self
+            .niri
+            .layout
+            .workspaces()
+            .find(|(_, _, ws)| ws.number() == Some(0))
+            .map(|(_, _, ws)| ws.id())
+        else {
+            return false;
+        };
+
+        self.niri.layout.clear_unmap_snapshot(window);
+        self.store_unmap_snapshot(window, Some(output));
+        self.backend.with_primary_renderer(|renderer| {
+            self.niri
+                .layout
+                .start_fly_off_animation_for_window(renderer, window);
+        });
+
+        if !self
+            .niri
+            .layout
+            .interactive_move_end_to_workspace(window, ws_id)
+        {
+            self.niri.layout.cancel_fly_offs();
+            self.niri.layout.clean_up_i3_workspaces();
+            return false;
+        }
+        self.niri.layout.clean_up_i3_workspaces();
+
+        let width = crate::utils::output_size(output).w;
+        let puff = Point::from((width - 10., pointer_y_in_output));
+        let now = self.niri.clock.now();
+        self.niri.poof.spawn(output.clone(), puff, now);
+
+        self.remember_poof(window, origin);
+        self.niri.queue_redraw_all();
+        true
+    }
+
+    /// Remembers a poof so that move-left can undo it.
+    fn remember_poof(
+        &mut self,
+        window: &smithay::desktop::Window,
+        origin: Option<(
+            crate::layout::workspace::WorkspaceId,
+            crate::layout::tiling::TilingPlace,
+        )>,
+    ) {
+        let (workspace, place) = match origin {
+            Some((workspace, place)) => (workspace, Some(place)),
+            None => match self.niri.layout.active_workspace() {
+                Some(ws) => (ws.id(), None),
+                None => return,
+            },
+        };
+        self.niri.poof_undo = Some(PoofUndo {
+            window: window.clone(),
+            at: self.niri.clock.now_unadjusted(),
+            workspace,
+            place,
+        });
+    }
+
+    /// Puts the last poofed window back where it was, if it was poofed from the active workspace
+    /// within [`POOF_UNDO_TIME`].
+    fn undo_poof(&mut self) -> bool {
+        if self.niri.in_key_repeat {
+            return false;
+        }
+        let Some(undo) = self.niri.poof_undo.take() else {
+            return false;
+        };
+        let now = self.niri.clock.now_unadjusted();
+        if now.saturating_sub(undo.at) > POOF_UNDO_TIME {
+            return false;
+        }
+        if self.niri.layout.active_workspace().map(|ws| ws.id()) != Some(undo.workspace) {
+            return false;
+        }
+        let in_scratchpad = self
+            .niri
+            .layout
+            .workspaces()
+            .any(|(_, _, ws)| ws.number() == Some(0) && ws.has_window(&undo.window));
+        if !in_scratchpad {
+            return false;
+        }
+
+        self.niri.layout.cancel_fly_offs();
+        self.niri.poof.cancel();
+        self.niri
+            .layout
+            .restore_window_to_place(&undo.window, undo.workspace, undo.place.as_ref());
+        self.niri.layout.clean_up_i3_workspaces();
+        self.niri.queue_redraw_all();
+        true
     }
 
     fn start_key_repeat(&mut self, bind: Bind) {
@@ -1099,6 +1243,8 @@ impl State {
             Action::MoveColumnLeft => {
                 if self.niri.screenshot_ui.is_open() {
                     self.niri.screenshot_ui.move_left();
+                } else if self.undo_poof() {
+                    self.maybe_warp_cursor_to_focus();
                 } else {
                     self.niri.layout.move_left();
                     self.maybe_warp_cursor_to_focus();

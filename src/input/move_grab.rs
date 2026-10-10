@@ -18,8 +18,20 @@ use smithay::input::{tablet, SeatHandler};
 use smithay::output::Output;
 use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 
+use crate::input::swipe_tracker::SwipeTracker;
 use crate::input::AnyStartData;
 use crate::niri::State;
+
+/// How close to the right edge of the output, in logical pixels, a dragged window has to be let
+/// go of to fling it to the scratchpad.
+const FLING_EDGE: f64 = 4.;
+/// How fast, in logical pixels per second, it has to be moving to the right.
+const FLING_VELOCITY: f64 = 1500.;
+
+/// Whether letting go of a dragged window here, moving this fast, flings it to the scratchpad.
+fn is_fling(pointer_x_in_output: f64, output_width: f64, velocity: f64) -> bool {
+    pointer_x_in_output >= output_width - FLING_EDGE && velocity >= FLING_VELOCITY
+}
 
 pub struct MoveGrab {
     start_data: AnyStartData<State>,
@@ -35,6 +47,9 @@ pub struct MoveGrab {
     new_location: Point<f64, Logical>,
     event_timestamp: Option<Duration>,
     relative_delta: Option<Point<f64, Logical>>,
+
+    /// Horizontal pointer movement while moving the window, for flinging it.
+    tracker: SwipeTracker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +83,7 @@ impl MoveGrab {
             new_location: location,
             event_timestamp: None,
             relative_delta: None,
+            tracker: SwipeTracker::new(),
         })
     }
 
@@ -100,7 +116,23 @@ impl MoveGrab {
 
                 layout.activate_window(&self.window);
             }
-            GestureState::Move => layout.interactive_move_end(&self.window),
+            GestureState::Move => {
+                // Thrown at the right edge: off to the scratchpad.
+                let fling = data
+                    .niri
+                    .output_under(self.last_location)
+                    .map(|(output, pos)| (output.clone(), pos))
+                    .filter(|(output, pos)| {
+                        let width = crate::utils::output_size(output).w;
+                        is_fling(pos.x, width, self.tracker.velocity())
+                    });
+                let flung = fling.is_some_and(|(output, pos)| {
+                    data.fling_to_scratchpad(&self.window, &output, pos.y)
+                });
+                if !flung {
+                    data.niri.layout.interactive_move_end(&self.window);
+                }
+            }
             GestureState::ViewOffset => {
                 layout.view_offset_gesture_end(Some(false));
             }
@@ -226,6 +258,9 @@ impl MoveGrab {
                     return true;
                 };
                 let output = output.clone();
+
+                // The relative delta keeps going past the edge, where the pointer is clamped.
+                self.tracker.push(relative_delta.x, timestamp);
 
                 // Interactive move always uses absolute delta since the window must remain pinned
                 // to the cursor even when it's clamped to monitor bounds.
@@ -641,5 +676,22 @@ impl TabletToolGrab<State> for MoveGrab {
 
     fn unset(&mut self, data: &mut State) {
         self.on_ungrab(data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fling_needs_the_edge_and_speed() {
+        // Fast, at the edge.
+        assert!(is_fling(1919., 1920., 2000.));
+        // Slow, at the edge.
+        assert!(!is_fling(1919., 1920., 500.));
+        // Fast, but not at the edge.
+        assert!(!is_fling(1800., 1920., 5000.));
+        // Fast, to the left.
+        assert!(!is_fling(1919., 1920., -2000.));
     }
 }

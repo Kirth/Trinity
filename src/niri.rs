@@ -142,7 +142,7 @@ use crate::input::scroll_swipe_gesture::ScrollSwipeGesture;
 use crate::input::scroll_tracker::ScrollTracker;
 use crate::input::{
     apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_mouse_binds,
-    mods_with_tablet_stylus_binds, mods_with_wheel_binds, TabletData,
+    mods_with_tablet_stylus_binds, mods_with_wheel_binds, PoofUndo, TabletData,
 };
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
@@ -355,6 +355,8 @@ pub struct Niri {
     /// When and for which window move-right last hit the right edge, and how many times in a
     /// row, for the scratchpad poof.
     pub edge_move_right: Option<(Duration, MappedId, u8)>,
+    /// The last window poofed away to the scratchpad, to put it back with move-left.
+    pub poof_undo: Option<PoofUndo>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
@@ -2798,6 +2800,7 @@ impl Niri {
             bind_repeat_timer: Option::default(),
             in_key_repeat: false,
             edge_move_right: None,
+            poof_undo: None,
             presentation_state,
             security_context_state,
             gamma_control_manager_state,

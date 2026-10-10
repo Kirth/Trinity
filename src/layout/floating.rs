@@ -634,6 +634,44 @@ impl<W: LayoutElement> FloatingSpace<W> {
         self.data.insert(to_idx, data);
     }
 
+    /// Starts an animation of a tile flying `distance` off to the right.
+    pub fn start_fly_off_animation_for_tile(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        snapshot: TileRenderSnapshot,
+        tile_size: Size<f64, Logical>,
+        tile_pos: Point<f64, Logical>,
+        distance: f64,
+    ) {
+        let anim = Animation::new(
+            self.clock.clone(),
+            0.,
+            1.,
+            0.,
+            self.options.animations.window_movement.0,
+        );
+        let scale = Scale::from(self.scale);
+        let res = ClosingWindow::new_fly_off(
+            renderer,
+            snapshot,
+            scale,
+            tile_size,
+            tile_pos,
+            anim,
+            distance,
+            self.clock.clone(),
+        );
+        match res {
+            Ok(closing) => self.closing_windows.push(closing),
+            Err(err) => warn!("error creating a fly-off animation: {err:?}"),
+        }
+    }
+
+    /// Drops the windows flying off to the scratchpad.
+    pub fn cancel_fly_offs(&mut self) {
+        self.closing_windows.retain(|closing| !closing.is_fly_off());
+    }
+
     pub fn start_close_animation_for_tile(
         &mut self,
         renderer: &mut GlesRenderer,

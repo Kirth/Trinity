@@ -75,6 +75,11 @@ To send a window there, move it all the way to the right with `move-column-right
 Holding the key down doesn't count, and focus stays on the current workspace.
 The fly-off and the puff play even with `animations { off; }`.
 
+You can also throw a window to the scratchpad with the mouse: drag it and let go while it's moving quickly into the right edge of the screen.
+A slow drag to the edge drops it there as usual.
+
+Poofed one by accident? Press `move-column-left` within 2 seconds, and the window comes back exactly where it was, in the same container and at the same size.
+
 Like any other workspace, it goes away once it's empty.
 Use `focus-workspace 0` to get to it, and the usual move actions to bring windows back.
 

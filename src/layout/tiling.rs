@@ -41,6 +41,28 @@ const DEBUG_LABEL_FONT: &str = "sans bold 12px";
 /// Radius of the debug layout label, in logical pixels.
 const DEBUG_LABEL_RADIUS: f64 = 11.;
 
+/// Where a window was in the tree, to put it back there.
+///
+/// Recorded right before the window is removed, and only valid as long as the tree doesn't change
+/// in the meantime. [`TilingSpace::insert_at_place`] checks that.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TilingPlace {
+    /// One level per step from the root down to the window's leaf.
+    levels: Vec<PlaceLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PlaceLevel {
+    /// Index of the node in its parent.
+    idx: usize,
+    /// Share of the node in its parent.
+    share: f64,
+    /// Layout of the parent.
+    parent_layout: ContainerLayout,
+    /// Number of children of the parent, with the node.
+    parent_len: usize,
+}
+
 /// How a container arranges its children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerLayout {
@@ -419,6 +441,26 @@ impl<W: LayoutElement> Container<W> {
         self.children.insert(idx, node);
         self.shares.insert(idx, share);
         if self.children.len() > 1 && idx <= self.focused {
+            self.focused += 1;
+        }
+    }
+
+    /// Inserts a child with this share, shrinking the others proportionally.
+    ///
+    /// Undoes [`Container::remove`] exactly, given the share the child had.
+    fn insert_with_share(&mut self, idx: usize, node: Node<W>, share: f64) {
+        if self.children.is_empty() {
+            self.children.push(node);
+            self.shares.push(1.);
+            return;
+        }
+        for s in &mut self.shares {
+            *s *= 1. - share;
+        }
+        self.children.insert(idx, node);
+        self.shares.insert(idx, share);
+        normalize(&mut self.shares);
+        if idx <= self.focused {
             self.focused += 1;
         }
     }
@@ -995,6 +1037,141 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.insert_leaf_after(&path, leaf, activate);
     }
 
+    /// Records where this window is in the tree, to put it back with
+    /// [`TilingSpace::insert_at_place`] after removing it.
+    pub fn place_of(&self, id: &W::Id) -> Option<TilingPlace> {
+        let path = self.root.find(id)?;
+        let mut container = &self.root;
+        let mut levels = Vec::new();
+        for &idx in &path {
+            levels.push(PlaceLevel {
+                idx,
+                share: container.shares[idx],
+                parent_layout: container.layout,
+                parent_len: container.children.len(),
+            });
+            if let Node::Container(child) = &container.children[idx] {
+                container = child;
+            }
+        }
+        Some(TilingPlace { levels })
+    }
+
+    /// Puts a tile back where [`TilingSpace::place_of`] recorded it, recreating the containers
+    /// that went away when they became empty.
+    ///
+    /// Gives the tile back if the tree changed since, without touching the tree.
+    #[must_use]
+    pub fn insert_at_place(
+        &mut self,
+        tile: Tile<W>,
+        place: &TilingPlace,
+        activate: bool,
+    ) -> Option<Tile<W>> {
+        // Check first. `existing` is how many levels down the containers still exist.
+        let mut existing = 0;
+        {
+            let mut container = Some(&self.root);
+            for (k, level) in place.levels.iter().enumerate() {
+                let is_leaf = k + 1 == place.levels.len();
+                match container {
+                    Some(c) => {
+                        // An emptied root keeps its layout, but gets the default one back when
+                        // a window opens, so don't insist on it.
+                        let layout_ok =
+                            c.layout == level.parent_layout || (k == 0 && c.children.is_empty());
+                        if !layout_ok {
+                            return Some(tile);
+                        }
+                        if !is_leaf && c.children.len() == level.parent_len {
+                            // The container on the way down is still there.
+                            match c.children.get(level.idx) {
+                                Some(Node::Container(child)) => {
+                                    container = Some(child);
+                                    existing += 1;
+                                }
+                                _ => return Some(tile),
+                            }
+                        } else if c.children.len() + 1 == level.parent_len
+                            && level.idx <= c.children.len()
+                        {
+                            // The node was removed here: the window's leaf, or a container that
+                            // became empty without it.
+                            container = None;
+                        } else {
+                            return Some(tile);
+                        }
+                    }
+                    None => {
+                        // Recreated containers only ever hold the next one down.
+                        if level.parent_len != 1 || level.idx != 0 {
+                            return Some(tile);
+                        }
+                    }
+                }
+            }
+        }
+
+        let leaf = self.new_leaf(tile);
+        if self.root.children.is_empty() {
+            self.root
+                .set_layout(place.levels[0].parent_layout, &self.options);
+        }
+
+        // Walk down the containers that are still there, then recreate the rest.
+        let mut path = Vec::new();
+        for level in &place.levels[..existing] {
+            path.push(level.idx);
+        }
+        let (leaf_level, rest) = place.levels[existing..].split_last().unwrap();
+        for (k, level) in rest.iter().enumerate() {
+            let next = place.levels[existing + k + 1].parent_layout;
+            let container = Container::new(next, &self.options);
+            let parent = self.root.container_at_mut(&path);
+            parent.insert_with_share(level.idx, Node::Container(Box::new(container)), level.share);
+            path.push(level.idx);
+        }
+        let parent = self.root.container_at_mut(&path);
+        parent.insert_with_share(leaf_level.idx, Node::Leaf(Box::new(leaf)), leaf_level.share);
+        path.push(leaf_level.idx);
+
+        if activate {
+            self.focus_path(&path);
+        }
+        self.update_layout(true, None);
+        None
+    }
+
+    /// The tree as text, with layouts, window ids and shares, for tests.
+    #[cfg(test)]
+    pub fn tree_string(&self) -> String
+    where
+        W::Id: std::fmt::Debug,
+    {
+        fn fmt<W: LayoutElement>(container: &Container<W>, out: &mut String)
+        where
+            W::Id: std::fmt::Debug,
+        {
+            out.push_str(&format!("{:?}[", container.layout));
+            for (i, (child, share)) in container.children.iter().zip(&container.shares).enumerate()
+            {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                match child {
+                    Node::Leaf(leaf) => out.push_str(&format!("{:?}", leaf.tile.window().id())),
+                    Node::Container(inner) => fmt(inner, out),
+                }
+                out.push_str(&format!(" {share:.2}"));
+            }
+            out.push(']');
+        }
+
+        let mut out = String::new();
+        fmt(&self.root, &mut out);
+        out
+    }
+
     /// Inserts a leaf after the node at `path`, or into the empty root if `path` is empty.
     fn insert_leaf_after(&mut self, path: &[usize], leaf: Leaf<W>, activate: bool) {
         let new_path = match path.split_last() {
@@ -1518,6 +1695,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
 
         // Unused: the fly-off times itself, so that it plays even with animations off.
+        // Far enough that the window, including its shadow, ends up past the right edge.
+        let distance = self.view_size.w - tile_pos.x + 100.;
         let anim = Animation::new(
             self.clock.clone(),
             0.,
@@ -1525,21 +1704,26 @@ impl<W: LayoutElement> TilingSpace<W> {
             0.,
             self.options.animations.window_movement.0,
         );
-        // Far enough that the window, including its shadow, ends up past the right edge.
-        let distance = self.view_size.w - tile_pos.x + 100.;
-
         let scale = Scale::from(self.scale);
-        let blocker = TransactionBlocker::completed();
-        let res = ClosingWindow::new(
-            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+        let res = ClosingWindow::new_fly_off(
+            renderer,
+            snapshot,
+            scale,
+            tile_size,
+            tile_pos,
+            anim,
+            distance,
+            self.clock.clone(),
         );
         match res {
-            Ok(closing) => {
-                let closing = closing.with_fly_off(distance, self.clock.clone());
-                self.closing_windows.push(closing);
-            }
+            Ok(closing) => self.closing_windows.push(closing),
             Err(err) => warn!("error creating a fly-off animation: {err:?}"),
         }
+    }
+
+    /// Drops the windows flying off to the scratchpad.
+    pub fn cancel_fly_offs(&mut self) {
+        self.closing_windows.retain(|closing| !closing.is_fly_off());
     }
 
     pub fn start_close_animation_for_tile(

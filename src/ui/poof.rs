@@ -80,6 +80,11 @@ impl Poof {
         });
     }
 
+    /// Drops all puffs, for undoing a poof.
+    pub fn cancel(&mut self) {
+        self.puffs.clear();
+    }
+
     pub fn advance_animations(&mut self, now: Duration) {
         self.puffs
             .retain(|puff| now.saturating_sub(puff.start) < DURATION);

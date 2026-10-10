@@ -187,6 +187,29 @@ impl ClosingWindow {
         })
     }
 
+    /// Creates a window flying `distance` to the right, starting right away.
+    ///
+    /// `anim` is unused: the fly-off times itself, so that it plays even with animations off.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_fly_off<E: RenderElement<GlesRenderer>>(
+        renderer: &mut GlesRenderer,
+        snapshot: RenderSnapshot<E, E>,
+        scale: Scale<f64>,
+        geo_size: Size<f64, Logical>,
+        pos: Point<f64, Logical>,
+        anim: Animation,
+        distance: f64,
+        clock: Clock,
+    ) -> anyhow::Result<Self> {
+        let blocker = TransactionBlocker::completed();
+        let closing = Self::new(renderer, snapshot, scale, geo_size, pos, blocker, anim)?;
+        Ok(closing.with_fly_off(distance, clock))
+    }
+
+    pub fn is_fly_off(&self) -> bool {
+        self.fly_off.is_some()
+    }
+
     /// Makes the window fly `distance` to the right instead of playing the close animation.
     pub fn with_fly_off(mut self, distance: f64, clock: Clock) -> Self {
         let start = clock.now();

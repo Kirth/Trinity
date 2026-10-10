@@ -55,6 +55,7 @@ use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
 pub use self::monitor::MonitorRenderElement;
 use self::monitor::{Monitor, WorkspaceSwitch};
 use self::side_view::Corner;
+use self::tiling::TilingPlace;
 use self::workspace::{OutputId, Workspace};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
@@ -457,6 +458,8 @@ struct InteractiveMoveData<W: LayoutElement> {
     /// config overrides for the workspace where the move originated from. As soon as the window
     /// moves over some different workspace though, this override will reset.
     pub(self) workspace_config: Option<(WorkspaceId, niri_config::LayoutPart)>,
+    /// Where the window was in the i3 tree before the move started, with its workspace.
+    pub(self) origin: Option<(WorkspaceId, TilingPlace)>,
 }
 
 #[derive(Debug)]
@@ -4221,6 +4224,8 @@ impl<W: LayoutElement> Layout<W> {
                 ws.set_fullscreen(window, false);
                 ws.set_maximized(window, false);
 
+                let origin = self.tiling_place(window);
+
                 let RemovedTile {
                     mut tile,
                     width,
@@ -4270,6 +4275,7 @@ impl<W: LayoutElement> Layout<W> {
                     pointer_ratio_within_window,
                     output_config,
                     workspace_config,
+                    origin,
                 };
 
                 if let Some((tile_pos, zoom)) = tile_pos {
@@ -4625,6 +4631,148 @@ impl<W: LayoutElement> Layout<W> {
                 );
             }
         }
+    }
+
+    /// Where the window being dragged was in the i3 tree before the drag, with its workspace.
+    pub fn interactive_move_origin(&self, window: &W::Id) -> Option<(WorkspaceId, TilingPlace)> {
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) if move_.tile.window().id() == window => {
+                move_.origin.clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// Ends dragging this window by putting it on this workspace, without focusing it.
+    pub fn interactive_move_end_to_workspace(
+        &mut self,
+        window: &W::Id,
+        ws_id: WorkspaceId,
+    ) -> bool {
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) if move_.tile.window().id() == window => (),
+            _ => return false,
+        }
+        if !self.workspaces().any(|(_, _, ws)| ws.id() == ws_id) {
+            return false;
+        }
+        let Some(InteractiveMoveState::Moving(mut move_)) = self.interactive_move.take() else {
+            unreachable!()
+        };
+
+        for mon in self.monitors_mut() {
+            mon.dnd_scroll_gesture_end();
+        }
+        if !move_.is_floating {
+            for ws in self.workspaces_mut() {
+                ws.dnd_scroll_gesture_end();
+            }
+            move_.tile.animate_alpha(
+                INTERACTIVE_MOVE_ALPHA,
+                1.,
+                self.options.animations.window_movement.0,
+            );
+            move_.tile.leave_side_view();
+        }
+
+        match &mut self.monitor_set {
+            MonitorSet::Normal { monitors, .. } => {
+                let mon = monitors
+                    .iter_mut()
+                    .find(|mon| mon.workspaces.iter().any(|ws| ws.id() == ws_id))
+                    .unwrap();
+                if mon.output != move_.output {
+                    move_.tile.window().output_leave(&move_.output);
+                }
+                mon.add_tile(
+                    move_.tile,
+                    MonitorAddWindowTarget::Workspace {
+                        id: ws_id,
+                        column_idx: None,
+                    },
+                    ActivateWindow::No,
+                    false,
+                    move_.width,
+                    move_.is_full_width,
+                    move_.is_floating,
+                    None,
+                );
+            }
+            MonitorSet::NoOutputs { workspaces, .. } => {
+                let ws = workspaces.iter_mut().find(|ws| ws.id() == ws_id).unwrap();
+                ws.add_tile(
+                    move_.tile,
+                    WorkspaceAddWindowTarget::Auto,
+                    ActivateWindow::No,
+                    move_.width,
+                    move_.is_full_width,
+                    move_.is_floating,
+                    None,
+                );
+            }
+        }
+        true
+    }
+
+    /// Records where a tiled window is in the i3 tree, with its workspace.
+    pub fn tiling_place(&self, window: &W::Id) -> Option<(WorkspaceId, TilingPlace)> {
+        let (_, _, ws) = self.workspaces().find(|(_, _, ws)| ws.has_window(window))?;
+        Some((ws.id(), ws.tiling_place(window)?))
+    }
+
+    /// Moves a window back to a place recorded with [`Layout::tiling_place`], and focuses it.
+    ///
+    /// Falls back to adding the window to that workspace as usual if the tree changed since, and
+    /// to the active workspace if the workspace is gone.
+    pub fn restore_window_to_place(
+        &mut self,
+        window: &W::Id,
+        ws_id: WorkspaceId,
+        place: Option<&TilingPlace>,
+    ) -> bool {
+        if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
+            if move_.tile.window().id() == window {
+                return false;
+            }
+        }
+
+        let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) else {
+            return false;
+        };
+        let RemovedTile {
+            tile,
+            width,
+            is_full_width,
+            is_floating,
+        } = ws.remove_tile(window, Transaction::new());
+
+        let has_target = self.workspaces().any(|(_, _, ws)| ws.id() == ws_id);
+        let ws = if has_target {
+            self.workspaces_mut().find(|ws| ws.id() == ws_id).unwrap()
+        } else if let Some(ws) = self.active_workspace_mut() {
+            ws
+        } else {
+            self.workspaces_mut().next().unwrap()
+        };
+
+        let tile = match place {
+            Some(place) if has_target => ws.add_tile_at_place(tile, place),
+            _ => Some(tile),
+        };
+        if let Some(tile) = tile {
+            ws.add_tile(
+                tile,
+                WorkspaceAddWindowTarget::Auto,
+                ActivateWindow::Yes,
+                width,
+                is_full_width,
+                is_floating,
+                None,
+            );
+        }
+
+        self.activate_window(window);
+        true
     }
 
     pub fn interactive_move_is_moving_above_output(&self, output: &Output) -> bool {
@@ -5028,7 +5176,8 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    /// Starts an animation of a tiled window flying off the right edge, in i3 mode.
+    /// Starts an animation of a tiled window, or of the window being dragged, flying off the
+    /// right edge, in i3 mode.
     ///
     /// The window's unmap snapshot must be stored beforehand.
     pub fn start_fly_off_animation_for_window(
@@ -5036,8 +5185,46 @@ impl<W: LayoutElement> Layout<W> {
         renderer: &mut GlesRenderer,
         window: &W::Id,
     ) {
+        let zoom = self.overview_zoom();
+
+        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
+            if move_.tile.window().id() == window {
+                let Some(snapshot) = move_.tile.take_unmap_snapshot() else {
+                    return;
+                };
+                let tile_pos = move_.tile_render_location(zoom);
+                let tile_size = move_.tile.tile_size();
+
+                let output = move_.output.clone();
+                let pointer_pos_within_output = move_.pointer_pos_within_output;
+                let Some(mon) = self.monitor_for_output_mut(&output) else {
+                    return;
+                };
+                let Some((ws, ws_geo)) = mon.workspace_under(pointer_pos_within_output) else {
+                    return;
+                };
+                let idx = mon.idx_of_ws(ws.id()).unwrap();
+                let ws = &mut mon.workspaces[idx];
+
+                // Far enough that the window, including its shadow, ends up past the right edge.
+                let distance = ws_geo.size.w - (tile_pos.x - ws_geo.loc.x) + 100.;
+                let tile_pos = tile_pos - ws_geo.loc;
+                ws.start_fly_off_animation_for_tile(
+                    renderer, snapshot, tile_size, tile_pos, distance,
+                );
+                return;
+            }
+        }
+
         if let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) {
             ws.start_fly_off_animation_for_window(renderer, window);
+        }
+    }
+
+    /// Drops the windows flying off to the scratchpad, for undoing a poof.
+    pub fn cancel_fly_offs(&mut self) {
+        for ws in self.workspaces_mut() {
+            ws.cancel_fly_offs();
         }
     }
 

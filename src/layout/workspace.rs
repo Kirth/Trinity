@@ -25,7 +25,7 @@ use super::shadow::Shadow;
 use super::side_view::{Corner, SideView, SideViewRestore};
 use super::tile::{Tile, TileRenderSnapshot};
 use super::tiling::{
-    ContainerLayout, Direction, LayoutCommand, Orientation, SplitCommand, TilingSpace,
+    ContainerLayout, Direction, LayoutCommand, Orientation, SplitCommand, TilingPlace, TilingSpace,
     TilingSpaceRenderElement,
 };
 use super::{
@@ -2350,6 +2350,28 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Starts an animation of a tile that's no longer in the workspace flying `distance` off to
+    /// the right, above the tiles.
+    pub fn start_fly_off_animation_for_tile(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        snapshot: TileRenderSnapshot,
+        tile_size: Size<f64, Logical>,
+        tile_pos: Point<f64, Logical>,
+        distance: f64,
+    ) {
+        self.floating
+            .start_fly_off_animation_for_tile(renderer, snapshot, tile_size, tile_pos, distance);
+    }
+
+    /// Drops the windows flying off to the scratchpad.
+    pub fn cancel_fly_offs(&mut self) {
+        self.floating.cancel_fly_offs();
+        if let Some(tiling) = &mut self.tiling {
+            tiling.cancel_fly_offs();
+        }
+    }
+
     pub fn start_close_animation_for_tile(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -2526,6 +2548,41 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     /// Adds a tile next to another one in the i3 tiling layout, after an interactive move.
+    /// Records where a tiled window is in the i3 tree.
+    pub fn tiling_place(&self, window: &W::Id) -> Option<TilingPlace> {
+        if self.floating.has_window(window) {
+            return None;
+        }
+        self.tiling.as_ref()?.place_of(window)
+    }
+
+    /// Puts a tile back where [`Workspace::tiling_place`] recorded it, and focuses it.
+    ///
+    /// Gives the tile back if that isn't possible anymore.
+    #[must_use]
+    pub(super) fn add_tile_at_place(
+        &mut self,
+        mut tile: Tile<W>,
+        place: &TilingPlace,
+    ) -> Option<Tile<W>> {
+        if self.tiling.is_none() {
+            return Some(tile);
+        }
+        self.enter_output_for_window(tile.window());
+        tile.restore_to_floating = false;
+        tile.leave_side_view();
+        if let Some(tile) = self
+            .tiling
+            .as_mut()
+            .unwrap()
+            .insert_at_place(tile, place, true)
+        {
+            return Some(tile);
+        }
+        self.floating_is_active = FloatingActive::No;
+        None
+    }
+
     pub(super) fn add_tile_next_to_tiling(
         &mut self,
         leaf_idx: usize,
