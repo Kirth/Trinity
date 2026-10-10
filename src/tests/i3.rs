@@ -712,3 +712,91 @@ fn undo_recreates_emptied_container() {
     f.double_roundtrip(id);
     assert_eq!(active_tree(&mut f), before);
 }
+
+fn drawer_ids(f: &mut Fixture) -> Vec<crate::window::mapped::MappedId> {
+    let output = f.niri_output(1);
+    let niri = f.niri();
+    niri.advance_animations();
+    niri.drawer_windows(&output)
+        .into_iter()
+        .map(|mapped| mapped.id())
+        .collect()
+}
+
+#[test]
+fn drawer_shows_poofed_windows() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    assert!(drawer_ids(&mut f).is_empty());
+
+    // Poof 3, then 2: the newest goes first.
+    for msec in [1000, 1100, 1200] {
+        move_right_at(&mut f, msec);
+    }
+    assert_eq!(drawer_ids(&mut f), [ids[2]]);
+    for msec in [3000, 3100, 3200] {
+        move_right_at(&mut f, msec);
+    }
+    assert_eq!(drawer_ids(&mut f), [ids[1], ids[2]]);
+
+    // The cards peek out at the right edge, and a point on one finds its window.
+    let output = f.niri_output(1);
+    let niri = f.niri();
+    let mut found = Vec::new();
+    for y in (0..1080).step_by(4) {
+        if let Some(id) = niri.drawer_window_under(&output, Point::from((1915., y as f64))) {
+            if !found.contains(&id) {
+                found.push(id);
+            }
+        }
+    }
+    assert_eq!(found, [ids[1], ids[2]]);
+    assert_eq!(
+        niri.drawer_window_under(&output, Point::from((1800., 540.))),
+        None
+    );
+
+    // Hidden in the overview.
+    niri.layout.toggle_overview();
+    assert!(drawer_ids(&mut f).is_empty());
+}
+
+#[test]
+fn pull_from_drawer_focuses_window() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    for msec in [1000, 1100, 1200] {
+        move_right_at(&mut f, msec);
+    }
+    assert_eq!(drawer_ids(&mut f), [ids[1]]);
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+
+    assert!(f.niri_state().pull_from_drawer(ids[1], &output).is_some());
+    f.double_roundtrip(id);
+
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+    assert!(drawer_ids(&mut f).is_empty());
+    assert!(f
+        .niri()
+        .layout
+        .workspaces()
+        .all(|(_, _, ws)| ws.number() != Some(0)));
+
+    // It's no longer undoable as a poof.
+    move_left_at(&mut f, 1500);
+    assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+}

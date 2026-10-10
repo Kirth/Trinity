@@ -176,6 +176,7 @@ use crate::render_helpers::{
 use crate::screencasting::Screencasting;
 use crate::ui::ace_hints::{AceHints, HintOutcome, GHOST_ALPHA};
 use crate::ui::config_error_notification::ConfigErrorNotification;
+use crate::ui::drawer::{Drawer, DrawerRenderElement};
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
@@ -421,6 +422,7 @@ pub struct Niri {
     pub exit_confirm_dialog: ExitConfirmDialog,
     pub ace_hints: AceHints,
     pub poof: Poof,
+    pub drawer: Drawer,
     pub resize_mode: ResizeMode,
 
     pub window_mru_ui: WindowMruUi,
@@ -577,6 +579,8 @@ pub struct PointContents {
     pub layer: Option<LayerSurface>,
     // Pointer is over a hot corner.
     pub hot_corner: bool,
+    // Pointer is over this window's card in the scratchpad drawer.
+    pub drawer: Option<MappedId>,
 }
 
 #[derive(Debug, Default)]
@@ -2850,6 +2854,7 @@ impl Niri {
             exit_confirm_dialog,
             ace_hints: AceHints::new(),
             poof: Poof::new(),
+            drawer: Drawer::new(),
             resize_mode: ResizeMode::new(),
 
             window_mru_ui,
@@ -3656,6 +3661,12 @@ impl Niri {
                 .map(mapped_hit_data)
         };
 
+        // The scratchpad drawer is drawn above everything below.
+        if let Some(id) = self.drawer_window_under(output, pos_within_output) {
+            rv.drawer = Some(id);
+            return rv;
+        }
+
         let mon = self.layout.monitor_for_output(output).unwrap();
 
         let mut under =
@@ -4339,6 +4350,14 @@ impl Niri {
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
         self.poof.advance_animations(self.clock.now());
+        let scratchpad: Vec<_> = self
+            .layout
+            .workspaces()
+            .find(|(_, _, ws)| ws.number() == Some(0))
+            .map(|(_, _, ws)| ws.windows().map(|mapped| mapped.id()).collect())
+            .unwrap_or_default();
+        self.drawer.sync(&scratchpad);
+        self.drawer.advance_animations(self.clock.now());
 
         for state in self.output_state.values_mut() {
             if let Some(transition) = &mut state.screen_transition {
@@ -4572,6 +4591,18 @@ impl Niri {
             self.clock.now(),
             &mut |elem| push(elem.into()),
         );
+
+        // Then, the scratchpad drawer.
+        let drawer_windows = self.drawer_windows(output);
+        if !drawer_windows.is_empty() {
+            self.drawer.render(
+                ctx.r(),
+                output_size(output),
+                &drawer_windows,
+                output.current_scale().fractional_scale(),
+                &mut |elem| push(elem.into()),
+            );
+        }
 
         // Then, the window hints.
         if self.ace_hints.is_open() {
@@ -4919,6 +4950,7 @@ impl Niri {
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.poof.are_animations_ongoing(output);
+            state.unfinished_animations_remain |= self.drawer.are_animations_ongoing();
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
             // Also keep redrawing if the current cursor is animated.
@@ -6610,6 +6642,61 @@ impl Niri {
         rv
     }
 
+    /// Windows in the scratchpad drawer shown on this output, in drawer order.
+    ///
+    /// The drawer shows at the right edge of outputs with nothing to their right, in i3 mode,
+    /// unless the overview is open or a focused fullscreen window covers the output.
+    pub fn drawer_windows(&self, output: &Output) -> Vec<&Mapped> {
+        if !self.layout.is_i3() || self.layout.is_overview_open() {
+            return Vec::new();
+        }
+        if self.output_right_of(output).is_some() {
+            return Vec::new();
+        }
+        let Some(mon) = self.layout.monitor_for_output(output) else {
+            return Vec::new();
+        };
+        if mon.render_above_top_layer() {
+            return Vec::new();
+        }
+        let Some((_, _, ws)) = self
+            .layout
+            .workspaces()
+            .find(|(_, _, ws)| ws.number() == Some(0))
+        else {
+            return Vec::new();
+        };
+
+        let mut windows: Vec<&Mapped> = ws.windows().collect();
+        let order = self.drawer.order();
+        // Windows the drawer doesn't know about yet go last, until the next sync.
+        windows.sort_by_key(|mapped| {
+            order
+                .iter()
+                .position(|id| *id == mapped.id())
+                .unwrap_or(usize::MAX)
+        });
+        windows
+    }
+
+    /// The window whose drawer card is under this point, in output-local coordinates.
+    pub fn drawer_window_under(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> Option<MappedId> {
+        let windows = self.drawer_windows(output);
+        if windows.is_empty() {
+            return None;
+        }
+        let items: Vec<_> = windows
+            .iter()
+            .map(|mapped| (mapped.id(), crate::ui::drawer::window_size(mapped)))
+            .collect();
+        self.drawer
+            .window_under(output_size(output), &items, pos_within_output)
+    }
+
     /// Labeled windows on this output hidden behind a fullscreen or maximized window on their
     /// workspace, with their top-left corner in output-local logical coordinates.
     pub fn ace_hint_ghosts(&self, output: &Output) -> Vec<(&Tile<Mapped>, Point<f64, Logical>)> {
@@ -7366,6 +7453,7 @@ niri_render_elements! {
             SolidColorRenderElement
         >>>,
         Pointer = PointerRenderElements<R>,
+        Drawer = DrawerRenderElement<R>,
         Wayland = WaylandSurfaceRenderElement<R>,
         SolidColor = SolidColorRenderElement,
         ScreenshotUi = ScreenshotUiRenderElement,

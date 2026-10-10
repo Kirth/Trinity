@@ -80,6 +80,10 @@ A slow drag to the edge drops it there as usual.
 
 Poofed one by accident? Press `move-column-left` within 2 seconds, and the window comes back exactly where it was, in the same container and at the same size.
 
+Windows on workspace 0 peek out as thin live thumbnails at the right edge of the rightmost output, like a drawer, with the newest on top.
+Hover one to slide it out, click it to bring the window next to the focused one, or drag it out to put it anywhere.
+The drawer hides in the overview and behind a focused fullscreen window.
+
 Like any other workspace, it goes away once it's empty.
 Use `focus-workspace 0` to get to it, and the usual move actions to bring windows back.
 

@@ -353,8 +353,6 @@ impl Thumbnail {
         let padding = round(config.highlight.padding);
         let title_gap = round(TITLE_GAP);
 
-        let s = Scale::from(scale);
-
         let preview_alpha = self
             .open_animation
             .as_ref()
@@ -368,91 +366,18 @@ impl Thumbnail {
         };
         let bob_offset = Point::new(0., bob_y);
 
-        // Clip thumbnails to their geometry.
-        let radius = if mapped.sizing_mode().is_normal() {
-            mapped.geometry_corner_radius()
-        } else {
-            CornerRadius::default()
-        };
-
-        let has_border_shader = BorderRenderElement::has_shader(ctx.renderer);
-        let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
         let geo = Rectangle::from_size(self.size.to_f64());
-        // FIXME: deduplicate code with Tile::render_inner()
-        let clip = move |elem| match elem {
-            LayoutElementRenderElement::Wayland(elem) => {
-                if let Some(shader) = clip_shader.clone() {
-                    if ClippedSurfaceRenderElement::will_clip(&elem, s, geo, radius) {
-                        let elem =
-                            ClippedSurfaceRenderElement::new(elem, s, geo, shader.clone(), radius);
-                        return ThumbnailRenderElement::ClippedSurface(elem);
-                    }
-                }
-
-                // If we don't have the shader, render it normally.
-                let elem = LayoutElementRenderElement::Wayland(elem);
-                ThumbnailRenderElement::LayoutElement(elem)
-            }
-            LayoutElementRenderElement::SolidColor(elem) => {
-                // In this branch we're rendering a blocked-out window with a solid
-                // color. We need to render it with a rounded corner shader even if
-                // clip_to_geometry is false, because in this case we're assuming that
-                // the unclipped window CSD already has corners rounded to the
-                // user-provided radius, so our blocked-out rendering should match that
-                // radius.
-                if radius != CornerRadius::default() && has_border_shader {
-                    return BorderRenderElement::new(
-                        geo.size,
-                        Rectangle::from_size(geo.size),
-                        GradientInterpolation::default(),
-                        Color::from_color32f(elem.color()),
-                        Color::from_color32f(elem.color()),
-                        0.,
-                        Rectangle::from_size(geo.size),
-                        0.,
-                        radius,
-                        scale as f32,
-                        1.,
-                    )
-                    .into();
-                }
-
-                // Otherwise, render the solid color as is.
-                LayoutElementRenderElement::SolidColor(elem).into()
-            }
-            elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
-                // This is only used on popups for now. If subsurface blur is implemented, this
-                // will need to be handled somehow.
-                error!("background effect clipping is unimplemented");
-                elem.into()
-            }
-        };
-
-        let downscale = move |elem| {
-            let thumb_scale = Scale {
-                x: preview_geo.size.w / geo.size.w,
-                y: preview_geo.size.h / geo.size.h,
-            };
-            let offset = Point::new(
-                preview_geo.size.w - (geo.size.w * thumb_scale.x),
-                preview_geo.size.h - (geo.size.h * thumb_scale.y),
-            )
-            .downscale(2.);
-            let elem = RescaleRenderElement::from_element(elem, Point::new(0, 0), thumb_scale);
-            let elem = RelocateRenderElement::from_element(
-                elem,
-                (preview_geo.loc + offset + bob_offset).to_physical_precise_round(scale),
-                Relocate::Relative,
-            );
-            WindowMruUiRenderElement::Thumbnail(elem)
-        };
-
-        // FIXME: this could use mipmaps, for that it should be rendered through an offscreen.
-        mapped.render_normal(ctx.r(), Point::new(0., 0.), s, preview_alpha, &mut |elem| {
-            let elem = clip(elem);
-            let elem = downscale(elem);
-            push(elem)
-        });
+        let mut preview_geo = preview_geo;
+        preview_geo.loc += bob_offset;
+        push_window_thumbnail(
+            ctx.r(),
+            mapped,
+            geo.size,
+            preview_geo,
+            scale,
+            preview_alpha,
+            &mut |elem| push(WindowMruUiRenderElement::Thumbnail(elem)),
+        );
 
         let mut title_size = None;
         let title_texture = self.title_texture(ctx.as_gles().renderer, mapped, scale);
@@ -1932,4 +1857,109 @@ fn make_dynamic_opened_binds(config: &Config) -> Vec<Bind> {
     }
 
     rv
+}
+
+/// A window scaled down into a thumbnail.
+pub type ThumbnailElement<R> =
+    RelocateRenderElement<RescaleRenderElement<ThumbnailRenderElement<R>>>;
+
+/// Renders a window scaled down to fit `preview_geo`, clipped to its geometry with rounded
+/// corners.
+///
+/// Works for windows on any workspace, visible or not.
+pub fn push_window_thumbnail<R: NiriRenderer>(
+    mut ctx: RenderCtx<R>,
+    mapped: &Mapped,
+    window_size: Size<f64, Logical>,
+    preview_geo: Rectangle<f64, Logical>,
+    scale: f64,
+    alpha: f32,
+    push: &mut dyn FnMut(ThumbnailElement<R>),
+) {
+    let s = Scale::from(scale);
+
+    // Clip thumbnails to their geometry.
+    let radius = if mapped.sizing_mode().is_normal() {
+        mapped.geometry_corner_radius()
+    } else {
+        CornerRadius::default()
+    };
+
+    let has_border_shader = BorderRenderElement::has_shader(ctx.renderer);
+    let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+    let geo = Rectangle::from_size(window_size);
+    // FIXME: deduplicate code with Tile::render_inner()
+    let clip = move |elem| match elem {
+        LayoutElementRenderElement::Wayland(elem) => {
+            if let Some(shader) = clip_shader.clone() {
+                if ClippedSurfaceRenderElement::will_clip(&elem, s, geo, radius) {
+                    let elem =
+                        ClippedSurfaceRenderElement::new(elem, s, geo, shader.clone(), radius);
+                    return ThumbnailRenderElement::ClippedSurface(elem);
+                }
+            }
+
+            // If we don't have the shader, render it normally.
+            let elem = LayoutElementRenderElement::Wayland(elem);
+            ThumbnailRenderElement::LayoutElement(elem)
+        }
+        LayoutElementRenderElement::SolidColor(elem) => {
+            // In this branch we're rendering a blocked-out window with a solid
+            // color. We need to render it with a rounded corner shader even if
+            // clip_to_geometry is false, because in this case we're assuming that
+            // the unclipped window CSD already has corners rounded to the
+            // user-provided radius, so our blocked-out rendering should match that
+            // radius.
+            if radius != CornerRadius::default() && has_border_shader {
+                return BorderRenderElement::new(
+                    geo.size,
+                    Rectangle::from_size(geo.size),
+                    GradientInterpolation::default(),
+                    Color::from_color32f(elem.color()),
+                    Color::from_color32f(elem.color()),
+                    0.,
+                    Rectangle::from_size(geo.size),
+                    0.,
+                    radius,
+                    scale as f32,
+                    1.,
+                )
+                .into();
+            }
+
+            // Otherwise, render the solid color as is.
+            LayoutElementRenderElement::SolidColor(elem).into()
+        }
+        elem @ LayoutElementRenderElement::BackgroundEffect(_) => {
+            // This is only used on popups for now. If subsurface blur is implemented, this
+            // will need to be handled somehow.
+            error!("background effect clipping is unimplemented");
+            elem.into()
+        }
+    };
+
+    let downscale = move |elem| {
+        let thumb_scale = Scale {
+            x: preview_geo.size.w / geo.size.w,
+            y: preview_geo.size.h / geo.size.h,
+        };
+        let offset = Point::new(
+            preview_geo.size.w - (geo.size.w * thumb_scale.x),
+            preview_geo.size.h - (geo.size.h * thumb_scale.y),
+        )
+        .downscale(2.);
+        let elem = RescaleRenderElement::from_element(elem, Point::new(0, 0), thumb_scale);
+        RelocateRenderElement::from_element(
+            elem,
+            (preview_geo.loc + offset).to_physical_precise_round(scale),
+            Relocate::Relative,
+        )
+    };
+
+    // FIXME: this could use mipmaps, for that it should be rendered through an offscreen.
+    mapped.render_normal(ctx.r(), Point::new(0., 0.), s, alpha, &mut |elem| {
+        let elem = clip(elem);
+        let elem = downscale(elem);
+        push(elem)
+    });
 }

@@ -4739,6 +4739,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) else {
             return false;
         };
+        let old_output = ws.current_output().cloned();
         let RemovedTile {
             tile,
             width,
@@ -4769,6 +4770,18 @@ impl<W: LayoutElement> Layout<W> {
                 is_floating,
                 None,
             );
+        }
+
+        // Leave the output of workspace 0 if it was elsewhere.
+        let new_output = ws.current_output().cloned();
+        if let Some(old_output) = old_output {
+            if new_output.as_ref() != Some(&old_output) {
+                if let Some(ws) = self.workspaces().find(|(_, _, ws)| ws.has_window(window)) {
+                    if let Some(mapped) = ws.2.windows().find(|m| m.id() == window) {
+                        mapped.output_leave(&old_output);
+                    }
+                }
+            }
         }
 
         self.activate_window(window);

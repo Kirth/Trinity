@@ -848,6 +848,74 @@ impl State {
         true
     }
 
+    /// Updates which card in the scratchpad drawer is under the pointer.
+    fn update_drawer_hover(&mut self, pos: Point<f64, Logical>) {
+        let pointer = self.niri.seat.get_pointer().unwrap();
+        let hit = if pointer.is_grabbed() {
+            // Don't fight over the cursor with a drag.
+            None
+        } else {
+            self.niri.output_under(pos).and_then(|(output, pos)| {
+                let output = output.clone();
+                let id = self.niri.drawer_window_under(&output, pos)?;
+                Some((output, id))
+            })
+        };
+
+        let was_hovering = self.niri.drawer.hovered().is_some();
+        if self.niri.drawer.set_hovered(hit) {
+            let is_hovering = self.niri.drawer.hovered().is_some();
+            if is_hovering {
+                self.niri
+                    .cursor_manager
+                    .set_cursor_image(CursorImageStatus::Named(CursorIcon::Pointer));
+            } else if was_hovering && !pointer.is_grabbed() {
+                // A client surface under the pointer sets its own cursor on enter.
+                self.niri
+                    .cursor_manager
+                    .set_cursor_image(CursorImageStatus::default_named());
+            }
+            self.niri.queue_redraw_all();
+        }
+    }
+
+    /// Takes a window out of the scratchpad drawer and puts it next to the focused window on the
+    /// active workspace of this output, focused.
+    pub(crate) fn pull_from_drawer(
+        &mut self,
+        id: crate::window::mapped::MappedId,
+        output: &Output,
+    ) -> Option<smithay::desktop::Window> {
+        let window = self
+            .niri
+            .layout
+            .windows()
+            .find(|(_, mapped)| mapped.id() == id)
+            .map(|(_, mapped)| mapped.window.clone())?;
+        let ws_id = self
+            .niri
+            .layout
+            .monitor_for_output(output)?
+            .active_workspace_ref()
+            .id();
+
+        self.niri
+            .layout
+            .restore_window_to_place(&window, ws_id, None);
+        self.niri.layout.clean_up_i3_workspaces();
+        self.niri.drawer.forget(id);
+        if self
+            .niri
+            .poof_undo
+            .as_ref()
+            .is_some_and(|undo| undo.window == window)
+        {
+            self.niri.poof_undo = None;
+        }
+        self.niri.queue_redraw_all();
+        Some(window)
+    }
+
     /// Remembers a poof so that move-left can undo it.
     fn remember_poof(
         &mut self,
@@ -864,6 +932,15 @@ impl State {
                 None => return,
             },
         };
+        if let Some(mapped) = self
+            .niri
+            .layout
+            .windows()
+            .find(|(_, m)| m.window == *window)
+        {
+            let id = mapped.1.id();
+            self.niri.drawer.remember(id);
+        }
         self.niri.poof_undo = Some(PoofUndo {
             window: window.clone(),
             at: self.niri.clock.now_unadjusted(),
@@ -2984,6 +3061,8 @@ impl State {
             }
         }
 
+        self.update_drawer_hover(new_pos);
+
         let under = self.niri.contents_under(new_pos);
 
         // Handle confined pointer.
@@ -3119,6 +3198,8 @@ impl State {
             }
         }
 
+        self.update_drawer_hover(pos);
+
         let under = self.niri.contents_under(pos);
 
         self.niri.handle_focus_follows_mouse(&under);
@@ -3219,6 +3300,48 @@ impl State {
                     }
 
                     self.niri.suppressed_buttons.insert(button_code);
+                    return;
+                }
+            }
+
+            // A press on a card in the scratchpad drawer pulls its window out: a click brings it
+            // next to the focused window, a drag moves it.
+            if button == Some(MouseButton::Left) && !is_mru_open && !pointer.is_grabbed() {
+                let location = pointer.current_location();
+                let hit = self.niri.output_under(location).and_then(|(output, pos)| {
+                    let output = output.clone();
+                    let id = self.niri.drawer_window_under(&output, pos)?;
+                    Some((output, id))
+                });
+                if let Some((output, id)) = hit {
+                    if let Some(window) = self.pull_from_drawer(id, &output) {
+                        let start_data = PointerGrabStartData {
+                            focus: None,
+                            button: button_code,
+                            location,
+                        };
+                        let start_data = AnyStartData::Pointer(start_data);
+                        let icon = CursorIcon::Grabbing;
+                        if let Some(grab) =
+                            MoveGrab::new(self, start_data, window, false, Some(icon))
+                        {
+                            pointer.set_grab(self, grab, serial, Focus::Clear);
+                            self.niri
+                                .cursor_manager
+                                .set_cursor_image(CursorImageStatus::Named(icon));
+                        }
+                    }
+
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button: button_code,
+                            state: button_state,
+                            serial,
+                            time: event.time(),
+                        },
+                    );
+                    pointer.frame(self);
                     return;
                 }
             }
