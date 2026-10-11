@@ -36,6 +36,10 @@ use crate::utils::{
     output_size, round_logical_in_physical, round_logical_in_physical_max1, ResizeEdge,
 };
 
+/// Share of the output height that the row of windows in limbo takes up at the bottom of the
+/// overview grid.
+pub const OVERVIEW_LIMBO_ROW: f64 = 0.18;
+
 /// Amount of touchpad movement to scroll the height of one workspace.
 const WORKSPACE_GESTURE_MOVEMENT: f64 = 300.;
 
@@ -84,6 +88,8 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) overview_open: bool,
     /// Progress of the overview zoom animation, 1 is fully in overview.
     overview_progress: Option<OverviewProgress>,
+    /// Whether there are windows in limbo, which the overview grid leaves room for.
+    pub(super) has_limbo: bool,
     /// Clock for driving animations.
     pub(super) clock: Clock,
     /// Configurable properties of the layout as received from the parent layout.
@@ -380,6 +386,7 @@ impl<W: LayoutElement> Monitor<W> {
             insert_hint_render_loc: None,
             overview_open: false,
             overview_progress: None,
+            has_limbo: false,
             workspace_switch: None,
             clock,
             base_options,
@@ -1734,6 +1741,7 @@ impl<W: LayoutElement> Monitor<W> {
     fn overview_grid(&self) -> OverviewGrid {
         let count = self.workspaces.len().max(1);
         let Size { w, h, .. } = self.view_size;
+        let band = self.overview_limbo_band().map_or(0., |band| band.size.h);
 
         // Gaps between and around the cells are a tenth of the cell height, see workspace_gap().
         let mut best = (1, 0.);
@@ -1741,7 +1749,7 @@ impl<W: LayoutElement> Monitor<W> {
             let rows = count.div_ceil(cols) as f64;
             let cols_f = cols as f64;
             let fit_w = w / (cols_f * w + (cols_f + 1.) * 0.1 * h);
-            let fit_h = 1. / (rows + (rows + 1.) * 0.1);
+            let fit_h = (h - band) / (rows * h + (rows + 1.) * 0.1 * h);
             let fit = fit_w.min(fit_h);
             if fit > best.1 {
                 best = (cols, fit);
@@ -1750,20 +1758,22 @@ impl<W: LayoutElement> Monitor<W> {
 
         let (cols, fit) = best;
         let max_zoom = overview_target_zoom(&self.options);
-        let zoom = if fit > 0. { fit.min(max_zoom) } else { max_zoom };
+        let zoom = if fit > 0. {
+            fit.min(max_zoom)
+        } else {
+            max_zoom
+        };
         let zoom = zoom.max(0.0001);
         let rows = count.div_ceil(cols);
 
         let ws_size = self.workspace_size(zoom);
         let gap = self.workspace_gap(zoom);
         let step = Point::from((ws_size.w + gap, ws_size.h + gap));
-        let grid_size = Size::from((
-            cols as f64 * step.x - gap,
-            rows as f64 * step.y - gap,
-        ));
+        let grid_size = Size::from((cols as f64 * step.x - gap, rows as f64 * step.y - gap));
 
         let scale = self.scale.fractional_scale();
-        let origin = (self.view_size.to_point() - grid_size.to_point()).downscale(2.);
+        let area = self.view_size - Size::from((0., band));
+        let origin = (area.to_point() - grid_size.to_point()).downscale(2.);
         let origin = origin.to_physical_precise_round(scale).to_logical(scale);
 
         OverviewGrid {
@@ -1772,6 +1782,25 @@ impl<W: LayoutElement> Monitor<W> {
             origin,
             step,
         }
+    }
+
+    /// The band at the bottom of the overview grid where windows in limbo show, if any.
+    pub fn overview_limbo_band(&self) -> Option<Rectangle<f64, Logical>> {
+        if !self.is_grid_overview() || !self.has_limbo {
+            return None;
+        }
+
+        let scale = self.scale.fractional_scale();
+        let height = round_logical_in_physical(scale, self.view_size.h * OVERVIEW_LIMBO_ROW);
+        let loc = Point::from((0., self.view_size.h - height));
+        Some(Rectangle::new(loc, Size::from((self.view_size.w, height))))
+    }
+
+    /// Progress of the overview zoom animation clamped to [0, 1], 0 when it's closed.
+    pub fn overview_progress_clamped(&self) -> f64 {
+        self.overview_progress
+            .as_ref()
+            .map_or(0., |p| p.clamped_value().clamp(0., 1.))
     }
 
     /// Offset to apply to positions within one workspace to get the same apparent position in
@@ -2056,8 +2085,12 @@ impl<W: LayoutElement> Monitor<W> {
             // creating new workspaces in between.
             let distance = |geo: &Rectangle<f64, Logical>| {
                 let pos = pos_within_output;
-                let dx = (geo.loc.x - pos.x).max(pos.x - (geo.loc.x + geo.size.w)).max(0.);
-                let dy = (geo.loc.y - pos.y).max(pos.y - (geo.loc.y + geo.size.h)).max(0.);
+                let dx = (geo.loc.x - pos.x)
+                    .max(pos.x - (geo.loc.x + geo.size.w))
+                    .max(0.);
+                let dy = (geo.loc.y - pos.y)
+                    .max(pos.y - (geo.loc.y + geo.size.h))
+                    .max(0.);
                 dx * dx + dy * dy
             };
             // Monitors always have at least one workspace.

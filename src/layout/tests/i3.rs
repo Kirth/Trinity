@@ -778,3 +778,34 @@ fn overview_grid_hit_testing() {
     let (insert_ws, _) = mon.insert_position(Point::from((1279., 719.)));
     assert_eq!(insert_ws, InsertWorkspace::Existing(mon.workspaces[3].id()));
 }
+
+#[test]
+fn overview_grid_leaves_room_for_limbo() {
+    let mut ops = three_workspaces();
+    ops.extend([
+        add_window(4),
+        Op::MoveToLimbo(4),
+        REFRESH,
+        Op::ToggleOverview,
+        Op::CompleteAnimations,
+    ]);
+    let layout = check_ops_with_options(i3_options(), ops);
+
+    let mon = &monitors(&layout)[0];
+    let band = mon.overview_limbo_band().unwrap();
+    assert_eq!(band.loc.y + band.size.h, 720.);
+    for geo in workspace_geos(&layout) {
+        assert!(
+            geo.loc.y + geo.size.h <= band.loc.y,
+            "{geo:?} must be above the limbo band {band:?}"
+        );
+    }
+}
+
+#[test]
+fn overview_grid_has_no_limbo_band_without_limbo() {
+    let mut ops = three_workspaces();
+    ops.extend([Op::ToggleOverview, Op::CompleteAnimations]);
+    let layout = check_ops_with_options(i3_options(), ops);
+    assert!(monitors(&layout)[0].overview_limbo_band().is_none());
+}

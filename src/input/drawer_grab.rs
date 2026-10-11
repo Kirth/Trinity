@@ -52,7 +52,7 @@ impl DrawerGrab {
         output: Output,
         id: MappedId,
     ) -> Option<Self> {
-        let edge = state.niri.config.borrow().limbo.edge;
+        let edge = state.niri.drawer_placement(&output).edge;
         let output_loc = state
             .niri
             .global_space
@@ -85,7 +85,7 @@ impl DrawerGrab {
         pos: Point<f64, Logical>,
         location: Point<f64, Logical>,
     ) -> Option<MoveGrab> {
-        let edge = data.niri.config.borrow().limbo.edge;
+        let edge = data.niri.drawer_placement(&self.output).edge;
         let slots = data.niri.drawer_slots(&self.output);
         let Some(slot) = slots.iter().find(|slot| slot.id == self.id) else {
             // The card went away.
@@ -136,9 +136,13 @@ impl DrawerGrab {
             .cursor_manager
             .set_cursor_image(CursorImageStatus::default_named());
 
-        // Let go without moving: a click brings the window next to the focused one.
+        // Let go without moving: a click brings the window next to the focused one, leaving the
+        // overview.
         if self.phase == Phase::Pending {
             data.pull_from_drawer(self.id, &self.output);
+            if data.niri.layout.is_overview_open() {
+                data.niri.layout.close_overview();
+            }
         }
         self.phase = Phase::Done;
         data.niri.queue_redraw_all();

@@ -46,6 +46,7 @@ Workspaces are numbered like in i3:
 - An empty workspace goes away as soon as you switch away from it.
 - Switching is instant: workspaces aren't laid out in a vertical strip.
 - The overview shows all workspaces of an output at once, as a grid of thumbnails. The thumbnails shrink to fit as you get more workspaces, but never get bigger than `overview { zoom; }`.
+- Docks (top-layer surfaces whose namespace contains `dock`) hide while the overview is open.
 - `focus-workspace-down` and `focus-workspace-up`, and the workspace switch gestures, go to the next and previous workspace on the output, wrapping around.
 - `move-workspace-up`, `move-workspace-down` and `move-workspace-to-index` do nothing, since workspaces are always sorted.
 
@@ -71,7 +72,7 @@ binds {
 
 #### Limbo
 
-Limbo is a hidden place for windows you want out of the way: it isn't a workspace, so it doesn't show up in your bar, in the overview or in the Alt-Tab switcher.
+Limbo is a hidden place for windows you want out of the way: it isn't a workspace, so it doesn't show up in your bar or in the Alt-Tab switcher.
 
 To send a window there, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies off the right edge in a puff of smoke.
 Holding the key down doesn't count, and focus stays on the current workspace.
@@ -90,7 +91,8 @@ Push the cursor against the edge beside the cards for a moment to slide them all
 A slid-out card shows its window's title next to it, and a middle click on a card closes its window.
 A card whose window wants attention sticks out further, outlined in the border's `urgent-color`.
 With more windows in limbo than fit legibly, the drawer shows as many as it can; scroll over it to cycle through the rest.
-The drawer hides in the overview and behind a focused fullscreen window.
+The drawer hides behind a focused fullscreen window.
+In the overview, the windows in limbo show instead in a row below the workspaces, newest first: clicking one brings it back and leaves the overview, and dragging one out lets you drop it on any workspace.
 
 The drawer can also sit on the left or bottom edge.
 The poof gesture and flinging always use the right edge.

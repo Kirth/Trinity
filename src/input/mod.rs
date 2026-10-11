@@ -835,8 +835,13 @@ impl State {
             })
         };
 
-        // Pushing against the edge beside the cards slides them all out.
-        if !pointer.is_grabbed() {
+        // Pushing against the edge beside the cards slides them all out, except in the overview
+        // where they're all out already.
+        if self.niri.layout.is_overview_open() {
+            if self.niri.drawer.clear_edge_pointer() {
+                self.niri.queue_redraw_all();
+            }
+        } else if !pointer.is_grabbed() {
             let edge = self.niri.config.borrow().limbo.edge;
             let now = self.niri.clock.now();
             let changed = match self.niri.output_under(pos) {

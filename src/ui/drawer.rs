@@ -67,6 +67,12 @@ const CAPTION_EXTEND: f64 = 0.5;
 const ICON: f64 = 32.;
 /// Gap between the app icon and the card's corner, in logical pixels.
 const ICON_INSET: f64 = 6.;
+/// Height of a card in the overview row, as a share of the height of the row.
+const ROW_CARD_SHARE: f64 = 0.7;
+/// Share of the width of the overview row the cards may take up.
+const ROW_MAX_STACK: f64 = 0.9;
+/// How much wider than high a card in the overview row gets, at most.
+const ROW_MAX_ASPECT: f64 = 2.5;
 /// How long the pointer has to stay against the edge beside the cards to slide them all out.
 const EDGE_DWELL: Duration = Duration::from_millis(150);
 
@@ -106,6 +112,9 @@ pub struct DrawerPlacement {
     pub edge: LimboEdge,
     /// Gap between a slid-out card and the edge, in logical pixels.
     pub margin: f64,
+    /// In the overview: the band below the workspaces where the cards show in a row, in
+    /// output-local coordinates.
+    pub overview: Option<Rectangle<f64, Logical>>,
 }
 
 /// Where a card goes on the output.
@@ -317,6 +326,9 @@ impl Drawer {
         items: &[Item],
         placement: DrawerPlacement,
     ) -> Vec<Slot> {
+        if let Some(band) = placement.overview {
+            return overview_slots(band, items, self.offset, self.dragging_on(output));
+        }
         slots(
             output_size,
             items,
@@ -413,15 +425,20 @@ impl Drawer {
         placement: DrawerPlacement,
         urgent_color: Color,
         scale: f64,
+        alpha: f32,
         push: &mut dyn FnMut(DrawerRenderElement<R>),
     ) {
         let items: Vec<_> = windows.iter().map(|mapped| Item::new(mapped)).collect();
         let slots = self.slots(output, output_size, &items, placement);
 
+        // In the overview, the cards fade in with it and don't slide.
+        let in_overview = placement.overview.is_some();
+        let opacity = if in_overview { alpha } else { OPACITY * alpha };
+
         // The title of the hovered card, on top of everything.
         let hovered = self
             .hovered_on(output)
-            .filter(|id| self.extend_of(output, *id) > CAPTION_EXTEND);
+            .filter(|id| in_overview || self.extend_of(output, *id) > CAPTION_EXTEND);
         let hovered = hovered.and_then(|id| {
             let slot = slots.iter().find(|slot| slot.id == id)?;
             let mapped = windows.iter().find(|mapped| mapped.id() == id)?;
@@ -446,7 +463,8 @@ impl Drawer {
             };
             let urgent = crate::layout::LayoutElement::is_urgent(*mapped);
             // The app icon, above its card.
-            if let Some(elem) = self.render_icon(ctx.renderer, mapped, slot.card, placement, scale)
+            if let Some(elem) =
+                self.render_icon(ctx.renderer, mapped, slot.card, placement, scale, opacity)
             {
                 push(DrawerRenderElement::Texture(elem));
             }
@@ -456,7 +474,7 @@ impl Drawer {
                 window_size(mapped),
                 slot.card,
                 scale,
-                OPACITY,
+                opacity,
                 &mut |elem| push(DrawerRenderElement::Thumbnail(elem)),
             );
 
@@ -477,7 +495,7 @@ impl Drawer {
                 SolidColorRenderElement::from_buffer(
                     buffer,
                     outline.loc,
-                    OPACITY,
+                    opacity,
                     Kind::Unspecified,
                 ),
             ));
@@ -532,6 +550,7 @@ impl Drawer {
         card: Rectangle<f64, Logical>,
         placement: DrawerPlacement,
         scale: f64,
+        opacity: f32,
     ) -> Option<PrimaryGpuTextureRenderElement> {
         let app_id = with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone())?;
         let size = f64::min(ICON, f64::min(card.size.w, card.size.h) / 2.);
@@ -552,7 +571,7 @@ impl Drawer {
         let elem = TextureRenderElement::from_texture_buffer(
             texture,
             loc,
-            OPACITY,
+            opacity,
             None,
             None,
             Kind::Unspecified,
@@ -705,6 +724,92 @@ fn card_size(size: Size<f64, Logical>, card_h: f64) -> Size<f64, Logical> {
     Size::from((w, (w / aspect).max(1.)))
 }
 
+/// Where the cards go in the overview: in a row centred in the band below the workspaces, left
+/// to right in drawer order.
+fn overview_slots(
+    band: Rectangle<f64, Logical>,
+    items: &[Item],
+    offset: usize,
+    drag: Option<(MappedId, f64)>,
+) -> Vec<Slot> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let size_of = |item: &Item, card_h: f64| {
+        let aspect = (item.size.w / item.size.h).min(ROW_MAX_ASPECT);
+        Size::from(((aspect * card_h).max(1.), card_h))
+    };
+    let total = |items: &[&Item], card_h: f64| -> f64 {
+        items
+            .iter()
+            .map(|item| size_of(item, card_h).w)
+            .sum::<f64>()
+            + GAP * (items.len() as f64 - 1.)
+    };
+
+    // Shrink the cards if they don't all fit, and past the smallest size, show as many as fit
+    // starting at the offset, like the drawer does.
+    let room = band.size.w * ROW_MAX_STACK;
+    let mut shown_items: Vec<&Item> = items.iter().collect();
+    let mut card_h = (band.size.h * ROW_CARD_SHARE).max(1.);
+    let full = total(&shown_items, card_h);
+    if full > room {
+        let gaps = GAP * (items.len() as f64 - 1.);
+        card_h = (card_h * (room - gaps) / (full - gaps)).max(1.);
+
+        let min_h = MIN_CARD_H.min(band.size.h * ROW_CARD_SHARE);
+        if card_h < min_h {
+            card_h = min_h;
+            let n = items.len();
+            shown_items.clear();
+            let mut used = 0.;
+            for i in 0..n {
+                let item = &items[(offset + i) % n];
+                let len = size_of(item, card_h).w;
+                let next = if shown_items.is_empty() {
+                    len
+                } else {
+                    used + GAP + len
+                };
+                if !shown_items.is_empty() && next > room {
+                    break;
+                }
+                used = next;
+                shown_items.push(item);
+            }
+        }
+    }
+
+    let mut next = band.loc.x + ((band.size.w - total(&shown_items, card_h)) / 2.).max(0.);
+    let y = band.loc.y + (band.size.h - card_h) / 2.;
+
+    shown_items
+        .into_iter()
+        .map(|item| {
+            let id = item.id;
+            let size = size_of(item, card_h);
+
+            // A dragged card follows the pointer, leaving its place in the order empty.
+            let x = match drag {
+                Some((dragged, at)) if dragged == id => at.clamp(
+                    band.loc.x,
+                    (band.loc.x + band.size.w - size.w).max(band.loc.x),
+                ),
+                _ => next,
+            };
+
+            let card = Rectangle::new(Point::from((x, y)), size);
+            next += size.w + GAP;
+            Slot {
+                id,
+                card,
+                hit: card,
+            }
+        })
+        .collect()
+}
+
 fn slots(
     output_size: Size<f64, Logical>,
     items: &[Item],
@@ -842,6 +947,7 @@ mod tests {
         DrawerPlacement {
             edge,
             margin: MARGIN,
+            overview: None,
         }
     }
 

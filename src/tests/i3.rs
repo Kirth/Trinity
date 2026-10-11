@@ -778,9 +778,35 @@ fn drawer_shows_poofed_windows() {
         None
     );
 
-    // Hidden in the overview.
+    // In the overview, they show in a row below the workspaces instead.
     niri.layout.toggle_overview();
-    assert!(drawer_ids(&mut f).is_empty());
+    niri.layout.refresh(true);
+    assert_eq!(drawer_ids(&mut f), [ids[1], ids[2]]);
+
+    let niri = f.niri();
+    let band = niri
+        .layout
+        .monitor_for_output(&output)
+        .unwrap()
+        .overview_limbo_band()
+        .unwrap();
+    let slots = niri.drawer_slots(&output);
+    assert_eq!(
+        slots.iter().map(|slot| slot.id).collect::<Vec<_>>(),
+        [ids[1], ids[2]]
+    );
+    // Left to right, newest first, inside the band.
+    assert!(slots[0].card.loc.x + slots[0].card.size.w <= slots[1].card.loc.x);
+    for slot in &slots {
+        assert!(band.contains_rect(slot.card), "{slot:?} outside {band:?}");
+        let center = slot.card.loc + slot.card.size.downscale(2.).to_point();
+        assert_eq!(niri.drawer_window_under(&output, center), Some(slot.id));
+    }
+    // Nothing at the old right edge spot.
+    assert_eq!(
+        niri.drawer_window_under(&output, Point::from((1915., 540.))),
+        None
+    );
 }
 
 #[test]
@@ -1261,9 +1287,11 @@ fn drawer_on_left_edge() {
 
     // The card peeks out on the left.
     let niri = f.niri();
-    let hits = |x: f64| (0..1080).step_by(4).any(|y| {
-        niri.drawer_window_under(&output, Point::from((x, y as f64))) == Some(ids[1])
-    });
+    let hits = |x: f64| {
+        (0..1080)
+            .step_by(4)
+            .any(|y| niri.drawer_window_under(&output, Point::from((x, y as f64))) == Some(ids[1]))
+    };
     assert!(hits(5.));
     assert!(!hits(1915.));
 }

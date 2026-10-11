@@ -3392,8 +3392,12 @@ impl Niri {
             layers
                 .layers_on(layer)
                 .rev()
-                .find_map(|layer| {
-                    let mapped = self.mapped_layer_surfaces.get(layer)?;
+                .find_map(|layer_surface| {
+                    let mapped = self.mapped_layer_surfaces.get(layer_surface)?;
+                    if self.is_hidden_in_overview(layer_surface, layer) {
+                        return None;
+                    }
+                    let layer = layer_surface;
 
                     let mut layer_pos_within_output =
                         layers.layer_geometry(layer).unwrap().loc.to_f64();
@@ -3611,7 +3615,9 @@ impl Niri {
                 .rev()
                 .find_map(|layer_surface| {
                     let mapped = self.mapped_layer_surfaces.get(layer_surface)?;
-                    if mapped.place_within_backdrop() {
+                    if mapped.place_within_backdrop()
+                        || self.is_hidden_in_overview(layer_surface, layer)
+                    {
                         return None;
                     }
 
@@ -4628,6 +4634,14 @@ impl Niri {
 
         // Then, the limbo drawer, below the hints so that its cards don't cover their labels.
         let drawer_windows = self.drawer_windows(output);
+        // In the overview, the row of cards fades in with it.
+        let drawer_alpha = if self.layout.is_overview_open() {
+            self.layout
+                .monitor_for_output(output)
+                .map_or(1., |mon| mon.overview_progress_clamped() as f32)
+        } else {
+            1.
+        };
         if !drawer_windows.is_empty() {
             self.drawer.render(
                 ctx.r(),
@@ -4637,6 +4651,7 @@ impl Niri {
                 self.drawer_placement(output),
                 self.config.borrow().layout.border.urgent_color,
                 output.current_scale().fractional_scale(),
+                drawer_alpha,
                 &mut |elem| push(elem.into()),
             );
         }
@@ -4898,6 +4913,10 @@ impl Niri {
         layer_map.layers_on(layer).rev().filter_map(move |surface| {
             let mapped = self.mapped_layer_surfaces.get(surface)?;
 
+            if self.is_hidden_in_overview(surface, layer) {
+                return None;
+            }
+
             if for_backdrop != mapped.place_within_backdrop() {
                 return None;
             }
@@ -4905,6 +4924,14 @@ impl Niri {
             let geo = layer_map.layer_geometry(surface)?;
             Some((mapped, geo))
         })
+    }
+
+    /// Whether this layer-shell surface is hidden in the overview: docks on the top layer, which
+    /// the overview has no use for.
+    fn is_hidden_in_overview(&self, surface: &LayerSurface, layer: Layer) -> bool {
+        layer == Layer::Top
+            && self.layout.overview_zoom() < 1.
+            && surface.namespace().to_ascii_lowercase().contains("dock")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6689,10 +6716,14 @@ impl Niri {
     /// Windows in limbo, shown in the drawer on this output, newest first.
     ///
     /// The drawer shows at the right edge of outputs with nothing to their right, in i3 mode,
-    /// unless the overview is open or a focused fullscreen window covers the output.
+    /// unless a focused fullscreen window covers the output. In the overview, they show in a row
+    /// below the workspaces on every output.
     pub fn drawer_windows(&self, output: &Output) -> Vec<&Mapped> {
-        if !self.layout.is_i3() || self.layout.is_overview_open() {
+        if !self.layout.is_i3() {
             return Vec::new();
+        }
+        if self.layout.is_overview_open() {
+            return self.layout.limbo_windows().collect();
         }
         // The drawer sits on the outer edge of the outputs.
         let neighbour = match self.config.borrow().limbo.edge {
@@ -6743,7 +6774,24 @@ impl Niri {
         };
         let margin = MARGIN_MM * px_per_mm / scale;
 
-        DrawerPlacement { edge, margin }
+        // In the overview, the cards show in a row below the workspaces.
+        let overview = self
+            .layout
+            .is_overview_open()
+            .then(|| self.layout.monitor_for_output(output))
+            .flatten()
+            .and_then(|mon| mon.overview_limbo_band());
+        let edge = if overview.is_some() {
+            LimboEdge::Bottom
+        } else {
+            edge
+        };
+
+        DrawerPlacement {
+            edge,
+            margin,
+            overview,
+        }
     }
 
     /// The window whose drawer card is under this point, in output-local coordinates.

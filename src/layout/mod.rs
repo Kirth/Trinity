@@ -5496,6 +5496,14 @@ impl<W: LayoutElement> Layout<W> {
 
         self.assign_i3_numbers();
 
+        // The overview grid leaves room for the windows in limbo.
+        let has_limbo = !self.limbo.is_empty();
+        if let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set {
+            for mon in monitors {
+                mon.has_limbo = has_limbo;
+            }
+        }
+
         let mut ongoing_scrolling_dnd = self.dnd.is_some().then_some(true);
 
         // Windows in limbo are never active, but still get their configures.
