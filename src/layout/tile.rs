@@ -674,6 +674,12 @@ impl<W: LayoutElement> Tile<W> {
         self.move_y_animation = None;
     }
 
+    pub fn set_anim_x_between_workspaces(&mut self) {
+        if let Some(anim) = &mut self.move_x_animation {
+            anim.is_between_workspaces = true;
+        }
+    }
+
     pub fn set_anim_y_between_workspaces(&mut self) {
         if let Some(anim) = &mut self.move_y_animation {
             anim.is_between_workspaces = true;

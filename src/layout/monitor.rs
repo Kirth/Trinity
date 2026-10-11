@@ -17,7 +17,10 @@ use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceRenderElement,
 };
-use super::{compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options};
+use super::{
+    compute_overview_zoom, overview_target_zoom, zoom_towards, ActivateWindow, HitType,
+    LayoutElement, Options,
+};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::RenderLayer;
@@ -153,6 +156,39 @@ pub(super) struct InsertHint {
 struct InsertHintRenderLoc {
     workspace: InsertWorkspace,
     location: Point<f64, Logical>,
+}
+
+/// Layout of the workspace grid in the overview, in i3 mode.
+#[derive(Debug, Clone, Copy)]
+struct OverviewGrid {
+    cols: usize,
+    /// Zoom when the overview is fully open.
+    zoom: f64,
+    /// Location of the first cell when the overview is fully open.
+    origin: Point<f64, Logical>,
+    /// Distance between neighboring cells when the overview is fully open.
+    step: Point<f64, Logical>,
+}
+
+impl OverviewGrid {
+    fn cell_loc(&self, idx: usize) -> Point<f64, Logical> {
+        let col = (idx % self.cols) as f64;
+        let row = (idx / self.cols) as f64;
+        self.origin + Point::from((col * self.step.x, row * self.step.y))
+    }
+
+    /// Location of a fractional workspace idx, between the cells of the neighboring workspaces.
+    fn cell_loc_between(&self, idx: f64, count: usize) -> Point<f64, Logical> {
+        let idx = idx.clamp(0., count.saturating_sub(1) as f64);
+        let lower = idx.floor();
+        let frac = idx - lower;
+        let from = self.cell_loc(lower as usize);
+        if frac == 0. {
+            return from;
+        }
+        let to = self.cell_loc(lower as usize + 1);
+        from + (to - from).upscale(frac)
+    }
 }
 
 #[derive(Debug)]
@@ -537,7 +573,7 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        let delta_y = self.workspace_size_with_gap(1.).h * (from_idx as f64 - to_idx as f64);
+        let delta = self.workspace_offset(from_idx, to_idx);
 
         // Keep the empty workspaces around the edges, like when adding any other window.
         if to_idx == self.workspaces.len() - 1 {
@@ -558,8 +594,11 @@ impl<W: LayoutElement> Monitor<W> {
                     .tiles_with_render_positions_mut(false)
                     .find(|(tile, _)| tile.window().id() == &id)
                     .unwrap();
-                tile.animate_move_from_with_config(Point::from((0., delta_y)), config);
+                tile.animate_move_from_with_config(delta, config);
                 tile.set_anim_y_between_workspaces();
+                if delta.x != 0. {
+                    tile.set_anim_x_between_workspaces();
+                }
             }
         }
     }
@@ -1125,14 +1164,15 @@ impl<W: LayoutElement> Monitor<W> {
 
         let new_idx = self.idx_of_ws(new_id).unwrap();
 
-        // Animate vertical movement between workspaces.
+        // Animate movement between workspaces.
         //
         // Recompute the source idx in case some workspace was removed during clean-up. If the
         // source workspace itself was removed, don't bother animating this since the removal is
         // instant anyway.
+        let mut delta = Point::default();
         if let Some(source_workspace_idx) = self.idx_of_ws(source_id) {
-            old_render_pos.y +=
-                self.workspace_size_with_gap(1.).h * (source_workspace_idx as f64 - new_idx as f64);
+            delta = self.workspace_offset(source_workspace_idx, new_idx);
+            old_render_pos += delta;
         }
 
         let (tile, new_render_pos) = self.workspaces[new_idx]
@@ -1141,6 +1181,9 @@ impl<W: LayoutElement> Monitor<W> {
             .unwrap();
         tile.animate_move_from_with_config(old_render_pos - new_render_pos, config);
         tile.set_anim_y_between_workspaces();
+        if delta.x != 0. {
+            tile.set_anim_x_between_workspaces();
+        }
     }
 
     pub fn move_column_to_workspace_up(&mut self, activate: bool) {
@@ -1681,9 +1724,75 @@ impl<W: LayoutElement> Monitor<W> {
         self.workspace_size(zoom) + Size::from((0., gap))
     }
 
+    /// Whether the overview shows workspaces as a grid rather than a vertical strip.
+    fn is_grid_overview(&self) -> bool {
+        self.options.is_i3()
+    }
+
+    /// Computes the overview grid: as many columns as give the biggest cells while fitting every
+    /// workspace on the output, but no bigger than the configured overview zoom.
+    fn overview_grid(&self) -> OverviewGrid {
+        let count = self.workspaces.len().max(1);
+        let Size { w, h, .. } = self.view_size;
+
+        // Gaps between and around the cells are a tenth of the cell height, see workspace_gap().
+        let mut best = (1, 0.);
+        for cols in 1..=count {
+            let rows = count.div_ceil(cols) as f64;
+            let cols_f = cols as f64;
+            let fit_w = w / (cols_f * w + (cols_f + 1.) * 0.1 * h);
+            let fit_h = 1. / (rows + (rows + 1.) * 0.1);
+            let fit = fit_w.min(fit_h);
+            if fit > best.1 {
+                best = (cols, fit);
+            }
+        }
+
+        let (cols, fit) = best;
+        let max_zoom = overview_target_zoom(&self.options);
+        let zoom = if fit > 0. { fit.min(max_zoom) } else { max_zoom };
+        let zoom = zoom.max(0.0001);
+        let rows = count.div_ceil(cols);
+
+        let ws_size = self.workspace_size(zoom);
+        let gap = self.workspace_gap(zoom);
+        let step = Point::from((ws_size.w + gap, ws_size.h + gap));
+        let grid_size = Size::from((
+            cols as f64 * step.x - gap,
+            rows as f64 * step.y - gap,
+        ));
+
+        let scale = self.scale.fractional_scale();
+        let origin = (self.view_size.to_point() - grid_size.to_point()).downscale(2.);
+        let origin = origin.to_physical_precise_round(scale).to_logical(scale);
+
+        OverviewGrid {
+            cols,
+            zoom,
+            origin,
+            step,
+        }
+    }
+
+    /// Offset to apply to positions within one workspace to get the same apparent position in
+    /// another workspace.
+    fn workspace_offset(&self, from_idx: usize, to_idx: usize) -> Point<f64, Logical> {
+        if self.is_grid_overview() {
+            let grid = self.overview_grid();
+            (grid.cell_loc(from_idx) - grid.cell_loc(to_idx)).downscale(grid.zoom)
+        } else {
+            let delta_y = self.workspace_size_with_gap(1.).h * (from_idx as f64 - to_idx as f64);
+            Point::from((0., delta_y))
+        }
+    }
+
     pub fn overview_zoom(&self) -> f64 {
         let progress = self.overview_progress.as_ref().map(|p| p.value());
-        compute_overview_zoom(&self.options, progress)
+        if self.is_grid_overview() {
+            zoom_towards(self.overview_grid().zoom, progress)
+        } else {
+            compute_overview_zoom(&self.options, progress)
+        }
     }
 
     pub(super) fn set_overview_progress(&mut self, progress: Option<&super::OverviewProgress>) {
@@ -1720,7 +1829,9 @@ impl<W: LayoutElement> Monitor<W> {
             Some(OverviewProgress::Animation(progress_anim)),
         ) = (&self.workspace_switch, &self.overview_progress)
         {
-            if switch_anim.start_time() == progress_anim.start_time()
+            // The grid doesn't move along with the switch, so it needs no correction.
+            if !self.is_grid_overview()
+                && switch_anim.start_time() == progress_anim.start_time()
                 && (switch_anim.duration().as_secs_f64() - progress_anim.duration().as_secs_f64())
                     .abs()
                     <= 0.001
@@ -1800,13 +1911,32 @@ impl<W: LayoutElement> Monitor<W> {
             .to_physical_precise_round(scale)
             .to_logical(scale);
 
-        let first_ws_y = -self.workspace_render_idx() * ws_height_with_gap;
+        let render_idx = self.workspace_render_idx();
+        let first_ws_y = -render_idx * ws_height_with_gap;
         let first_ws_y = round_logical_in_physical(scale, first_ws_y);
+
+        // In the grid, the view zooms out from the cell of the active workspace: it fills the
+        // output when the overview is closed, and sits in its cell when it's fully open.
+        let grid = self.is_grid_overview().then(|| {
+            let grid = self.overview_grid();
+            let anchor = grid.cell_loc_between(render_idx, self.workspaces.len());
+            let progress = if grid.zoom < 1. {
+                (1. - zoom) / (1. - grid.zoom)
+            } else {
+                0.
+            };
+            (grid, anchor, progress)
+        });
 
         // Return position for one-past-last workspace too.
         (0..=self.workspaces.len()).map(move |idx| {
-            let y = first_ws_y + idx as f64 * ws_height_with_gap;
-            let loc = Point::from((0., y)) + static_offset;
+            let loc = if let Some((grid, anchor, progress)) = grid {
+                let cell = grid.cell_loc(idx);
+                anchor.upscale(progress) + (cell - anchor).upscale(zoom / grid.zoom)
+            } else {
+                let y = first_ws_y + idx as f64 * ws_height_with_gap;
+                Point::from((0., y)) + static_offset
+            };
 
             // Even though all components that go into loc are rounded to physical pixels, the
             // floating point addition may lose precision. This can result for example in the
@@ -1863,11 +1993,21 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<(&Workspace<W>, Rectangle<f64, Logical>)> {
+        let grid = self.is_grid_overview();
+        let half_gap = self.workspace_gap(self.overview_zoom()) / 2.;
+
         let (ws, geo) = self.workspaces_with_render_geo().find_map(|(ws, geo)| {
-            // Extend width to entire output.
-            let loc = Point::from((0., geo.loc.y));
-            let size = Size::from((self.view_size.w, geo.size.h));
-            let bounds = Rectangle::new(loc, size);
+            let bounds = if grid {
+                // Extend into the gaps around the cell.
+                let loc = geo.loc - Point::from((half_gap, half_gap));
+                let size = geo.size + Size::from((half_gap * 2., half_gap * 2.));
+                Rectangle::new(loc, size)
+            } else {
+                // Extend width to entire output.
+                let loc = Point::from((0., geo.loc.y));
+                let size = Size::from((self.view_size.w, geo.size.h));
+                Rectangle::new(loc, size)
+            };
 
             bounds.contains(pos_within_output).then_some((ws, geo))
         })?;
@@ -1911,6 +2051,23 @@ impl<W: LayoutElement> Monitor<W> {
         &self,
         pos_within_output: Point<f64, Logical>,
     ) -> (InsertWorkspace, Rectangle<f64, Logical>) {
+        if self.is_grid_overview() {
+            // All workspaces are visible in the grid, so go to the nearest one rather than
+            // creating new workspaces in between.
+            let distance = |geo: &Rectangle<f64, Logical>| {
+                let pos = pos_within_output;
+                let dx = (geo.loc.x - pos.x).max(pos.x - (geo.loc.x + geo.size.w)).max(0.);
+                let dy = (geo.loc.y - pos.y).max(pos.y - (geo.loc.y + geo.size.h)).max(0.);
+                dx * dx + dy * dy
+            };
+            // Monitors always have at least one workspace.
+            let ((_idx, ws), geo) = self
+                .workspaces_with_render_geo_idx()
+                .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+                .unwrap();
+            return (InsertWorkspace::Existing(ws.id()), geo);
+        }
+
         let mut iter = self.workspaces_with_render_geo_idx();
 
         let dummy = Rectangle::default();
@@ -2186,8 +2343,8 @@ impl<W: LayoutElement> Monitor<W> {
             return;
         }
 
-        if !self.overview_open {
-            // This gesture is only for the overview.
+        // This gesture is only for the overview, and the grid has nowhere to scroll.
+        if !self.overview_open || self.is_grid_overview() {
             return;
         }
 
@@ -2386,8 +2543,8 @@ impl<W: LayoutElement> Monitor<W> {
 
         velocity *= rubber_band.clamp_derivative(min, max, gesture.start_idx + current_pos);
 
-        // In i3 mode, a gesture outside the overview switches to the next or previous workspace.
-        if self.options.is_i3() && !self.overview_open && gesture.dnd_last_event_time.is_none() {
+        // In i3 mode, a gesture switches to the next or previous workspace.
+        if self.options.is_i3() && gesture.dnd_last_event_time.is_none() {
             self.workspace_switch = None;
             match new_idx.cmp(&self.active_workspace_idx) {
                 std::cmp::Ordering::Less => self.switch_workspace_up(),

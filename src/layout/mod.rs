@@ -2609,7 +2609,7 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.output == *output {
                 if self.overview_progress.is_some() {
-                    let zoom = self.overview_zoom();
+                    let zoom = self.overview_zoom_for(output);
                     let tile_pos = move_.tile_render_location(zoom);
                     let pos_within_tile = (pos_within_output - tile_pos).downscale(zoom);
                     // During the overview animation, we cannot do input hits because we cannot
@@ -2674,13 +2674,27 @@ impl<W: LayoutElement> Layout<W> {
         compute_overview_zoom(&self.options, progress)
     }
 
+    /// Overview zoom on this output, which can differ between outputs in i3 mode.
+    pub fn overview_zoom_for(&self, output: &Output) -> f64 {
+        self.monitor_for_output(output)
+            .map_or_else(|| self.overview_zoom(), |mon| mon.overview_zoom())
+    }
+
+    /// Overview zoom on the output of the interactively moved window.
+    fn interactive_move_zoom(&self) -> f64 {
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) => self.overview_zoom_for(&move_.output),
+            _ => self.overview_zoom(),
+        }
+    }
+
     #[cfg(test)]
     fn verify_invariants(&self) {
         use std::collections::HashSet;
 
         use approx::assert_abs_diff_eq;
 
-        let zoom = self.overview_zoom();
+        let zoom = self.interactive_move_zoom();
 
         // i3 workspace numbers are unique across monitors.
         let mut seen_numbers = HashSet::new();
@@ -3081,7 +3095,7 @@ impl<W: LayoutElement> Layout<W> {
 
         self.update_render_elements_time = self.clock.now();
 
-        let zoom = self.overview_zoom();
+        let zoom = self.interactive_move_zoom();
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if output.is_none_or(|output| move_.output == *output) {
                 let pos_within_output = move_.tile_render_location(zoom);
@@ -4089,15 +4103,13 @@ impl<W: LayoutElement> Layout<W> {
         timestamp: Duration,
         is_touchpad: bool,
     ) -> Option<Option<Output>> {
-        let zoom = self.overview_zoom();
-        let delta_x = delta_x / zoom;
-
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
             MonitorSet::NoOutputs { .. } => return None,
         };
 
         for monitor in monitors {
+            let delta_x = delta_x / monitor.overview_zoom();
             for ws in &mut monitor.workspaces {
                 if let Some(refresh) =
                     ws.view_offset_gesture_update(delta_x, timestamp, is_touchpad)
@@ -5238,7 +5250,7 @@ impl<W: LayoutElement> Layout<W> {
         }
         let _span = tracy_client::span!("Layout::store_unmap_snapshot");
 
-        let zoom = self.overview_zoom();
+        let zoom = self.interactive_move_zoom();
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
@@ -5340,7 +5352,7 @@ impl<W: LayoutElement> Layout<W> {
         if self.is_in_limbo(window) {
             return;
         }
-        let zoom = self.overview_zoom();
+        let zoom = self.interactive_move_zoom();
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
@@ -5394,7 +5406,7 @@ impl<W: LayoutElement> Layout<W> {
         }
         let _span = tracy_client::span!("Layout::start_close_animation_for_window");
 
-        let zoom = self.overview_zoom();
+        let zoom = self.interactive_move_zoom();
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
@@ -5462,7 +5474,7 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         let scale = Scale::from(move_.output.current_scale().fractional_scale());
-        let zoom = self.overview_zoom();
+        let zoom = self.interactive_move_zoom();
         let pos_in_backdrop = move_.tile_render_location(zoom);
         let xray_pos = XrayPos::new(pos_in_backdrop, zoom);
 
@@ -5780,10 +5792,17 @@ impl<W: LayoutElement> Default for MonitorSet<W> {
     }
 }
 
-fn compute_overview_zoom(options: &Options, overview_progress: Option<f64>) -> f64 {
+fn overview_target_zoom(options: &Options) -> f64 {
     // Clamp to some sane values.
-    let zoom = options.overview.zoom.clamp(0.0001, 0.75);
+    options.overview.zoom.clamp(0.0001, 0.75)
+}
 
+fn compute_overview_zoom(options: &Options, overview_progress: Option<f64>) -> f64 {
+    zoom_towards(overview_target_zoom(options), overview_progress)
+}
+
+/// Zoom at the given overview progress, going from 1 to `zoom` when fully open.
+fn zoom_towards(zoom: f64, overview_progress: Option<f64>) -> f64 {
     if let Some(p) = overview_progress {
         (1. - p * (1. - zoom)).max(0.0001)
     } else {

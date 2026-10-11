@@ -44,7 +44,8 @@ Workspaces are numbered like in i3:
 - If workspace 7 is on another output, that output gets focused.
 - Workspace numbers are unique across all outputs, and workspaces stay sorted by number.
 - An empty workspace goes away as soon as you switch away from it.
-- Switching is instant: workspaces aren't laid out in a vertical strip, except in the overview.
+- Switching is instant: workspaces aren't laid out in a vertical strip.
+- The overview shows all workspaces of an output at once, as a grid of thumbnails. The thumbnails shrink to fit as you get more workspaces, but never get bigger than `overview { zoom; }`.
 - `focus-workspace-down` and `focus-workspace-up`, and the workspace switch gestures, go to the next and previous workspace on the output, wrapping around.
 - `move-workspace-up`, `move-workspace-down` and `move-workspace-to-index` do nothing, since workspaces are always sorted.
 

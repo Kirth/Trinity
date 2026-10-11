@@ -666,3 +666,115 @@ fn resize_grows_window_at_its_min() {
     let x_after = positions(&layout)[&2].0.x;
     assert!(x_after > x_before + 30., "{x_before} -> {x_after}");
 }
+
+/// Three workspaces with a window each, plus the trailing empty one.
+fn three_workspaces() -> Vec<Op> {
+    vec![
+        Op::AddOutput(1),
+        add_window(1),
+        REFRESH,
+        Op::FocusI3Workspace(2),
+        add_window(2),
+        REFRESH,
+        Op::FocusI3Workspace(3),
+        add_window(3),
+        REFRESH,
+    ]
+}
+
+fn workspace_geos(layout: &Layout<TestWindow>) -> Vec<Rectangle<f64, Logical>> {
+    monitors(layout)[0]
+        .workspaces_with_render_geo_cull(false)
+        .map(|(_, geo)| geo)
+        .collect()
+}
+
+#[test]
+fn overview_lays_out_workspaces_in_a_grid() {
+    let mut ops = three_workspaces();
+    ops.extend([Op::ToggleOverview, Op::CompleteAnimations]);
+    let layout = check_ops_with_options(i3_options(), ops);
+
+    let geos = workspace_geos(&layout);
+    assert_eq!(geos.len(), 4);
+
+    // 2×2 on a 1280×720 output.
+    assert_eq!(geos[0].loc.y, geos[1].loc.y);
+    assert_eq!(geos[2].loc.y, geos[3].loc.y);
+    assert_eq!(geos[0].loc.x, geos[2].loc.x);
+    assert_eq!(geos[1].loc.x, geos[3].loc.x);
+    assert!(geos[0].loc.x < geos[1].loc.x);
+    assert!(geos[0].loc.y < geos[2].loc.y);
+
+    let output = Rectangle::from_size(Size::from((1280., 720.)));
+    for (i, geo) in geos.iter().enumerate() {
+        assert!(output.contains_rect(*geo), "{geo:?} must be on the output");
+        for other in &geos[i + 1..] {
+            assert!(!geo.overlaps(*other), "{geo:?} overlaps {other:?}");
+        }
+    }
+
+    // The grid is centered.
+    let left = geos[0].loc.x;
+    let right = 1280. - (geos[1].loc.x + geos[1].size.w);
+    assert!((left - right).abs() <= 1., "{left} vs {right}");
+}
+
+#[test]
+fn overview_grid_single_workspace_uses_configured_zoom() {
+    let ops = [
+        Op::AddOutput(1),
+        REFRESH,
+        Op::ToggleOverview,
+        Op::CompleteAnimations,
+    ];
+    let layout = check_ops_with_options(i3_options(), ops);
+
+    let mon = &monitors(&layout)[0];
+    let zoom = layout.options.overview.zoom;
+    assert_eq!(mon.overview_zoom(), zoom);
+
+    let geos = workspace_geos(&layout);
+    assert_eq!(geos.len(), 1);
+    let center = geos[0].loc + geos[0].size.downscale(2.).to_point();
+    assert!((center.x - 640.).abs() <= 1. && (center.y - 360.).abs() <= 1.);
+}
+
+#[test]
+fn closed_overview_grid_shows_active_workspace_fullscreen() {
+    let mut ops = three_workspaces();
+    ops.extend([Op::FocusI3Workspace(2), Op::CompleteAnimations]);
+    let layout = check_ops_with_options(i3_options(), ops);
+
+    let mon = &monitors(&layout)[0];
+    let mut visible = mon.workspaces_with_render_geo();
+    let (ws, geo) = visible.next().unwrap();
+    assert!(visible.next().is_none());
+    assert_eq!(ws.number, Some(2));
+    assert_eq!(geo, Rectangle::from_size(Size::from((1280., 720.))));
+}
+
+#[test]
+fn overview_grid_hit_testing() {
+    let mut ops = three_workspaces();
+    ops.extend([Op::ToggleOverview, Op::CompleteAnimations]);
+    let layout = check_ops_with_options(i3_options(), ops);
+
+    let mon = &monitors(&layout)[0];
+    let geos = workspace_geos(&layout);
+
+    // Inside the second column of the first row.
+    let pos = geos[1].loc + geos[1].size.downscale(2.).to_point();
+    let (ws, _) = mon.workspace_under(pos).unwrap();
+    assert_eq!(ws.number, Some(2));
+
+    // In the gap between the first and the second row, closer to the first.
+    let gap_top = geos[0].loc.y + geos[0].size.h;
+    let pos = Point::from((geos[0].loc.x + 10., gap_top + 1.));
+    let (insert_ws, _) = mon.insert_position(pos);
+    assert_eq!(insert_ws, InsertWorkspace::Existing(mon.workspaces[0].id()));
+
+    // Far outside the grid goes to the nearest cell.
+    let (insert_ws, _) = mon.insert_position(Point::from((1279., 719.)));
+    assert_eq!(insert_ws, InsertWorkspace::Existing(mon.workspaces[3].id()));
+}
