@@ -22,7 +22,7 @@ use niri::ipc::client::handle_msg;
 use niri::niri::State;
 use niri::utils::spawning::{
     spawn, spawn_sh, store_and_increase_nofile_rlimit, CHILD_DISPLAY, CHILD_ENV,
-    REMOVE_ENV_RUST_BACKTRACE, REMOVE_ENV_RUST_LIB_BACKTRACE,
+    REMOVE_ENV_GDK_PIXBUF_MODULE_FILE, REMOVE_ENV_RUST_BACKTRACE, REMOVE_ENV_RUST_LIB_BACKTRACE,
 };
 use niri::utils::{cause_panic, version, watcher, xwayland, IS_SYSTEMD_SERVICE};
 use niri_config::{Config, ConfigPath};
@@ -47,6 +47,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if env::var_os("RUST_LIB_BACKTRACE").is_none() {
         env::set_var("RUST_LIB_BACKTRACE", "0");
         REMOVE_ENV_RUST_LIB_BACKTRACE.store(true, Ordering::Relaxed);
+    }
+
+    // Let gdk-pixbuf load SVG app icons with the loaders this build was pointed at, without
+    // passing them on to spawned programs.
+    if let Some(file) = option_env!("NIRI_GDK_PIXBUF_MODULE_FILE") {
+        if env::var_os("GDK_PIXBUF_MODULE_FILE").is_none() {
+            env::set_var("GDK_PIXBUF_MODULE_FILE", file);
+            REMOVE_ENV_GDK_PIXBUF_MODULE_FILE.store(true, Ordering::Relaxed);
+        }
     }
 
     let directives = env::var("RUST_LOG").unwrap_or_else(|_| DEFAULT_LOG_FILTER.to_owned());

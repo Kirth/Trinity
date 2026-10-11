@@ -16,7 +16,9 @@
           lib,
           cairo,
           dbus,
+          gdk-pixbuf,
           libGL,
+          librsvg,
           libdisplay-info_0_3,
           libinput,
           seatd,
@@ -77,6 +79,7 @@
             [
               cairo
               dbus
+              gdk-pixbuf
               libGL
               libdisplay-info_0_3
               libinput
@@ -141,6 +144,8 @@
               ]
             );
             NIRI_BUILD_COMMIT = revision;
+            # gdk-pixbuf loaders including librsvg's, for SVG app icons.
+            NIRI_GDK_PIXBUF_MODULE_FILE = "${librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
           };
 
           passthru = {
@@ -205,6 +210,7 @@
               #
               # This should only be set with `RUSTFLAGS="$RUSTFLAGS -C your-flags"`
               RUSTFLAGS = niri.RUSTFLAGS;
+              NIRI_GDK_PIXBUF_MODULE_FILE = niri.NIRI_GDK_PIXBUF_MODULE_FILE;
             };
           };
         }

@@ -22,6 +22,7 @@ use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderEleme
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 use crate::render_helpers::RenderCtx;
 use crate::ui::mru::{push_window_thumbnail, ThumbnailElement};
+use crate::utils::app_icon::{load_icon, AppIcons};
 use crate::utils::with_toplevel_role;
 use crate::window::mapped::MappedId;
 use crate::window::Mapped;
@@ -62,6 +63,22 @@ const CAPTION_GAP: f64 = 8.;
 const CAPTION_MAX_CHARS: usize = 60;
 /// How far a card has to slide out before its title shows.
 const CAPTION_EXTEND: f64 = 0.5;
+/// Size of the app icon on a card, in logical pixels, at most half the card.
+const ICON: f64 = 32.;
+/// Gap between the app icon and the card's corner, in logical pixels.
+const ICON_INSET: f64 = 6.;
+/// How long the pointer has to stay against the edge beside the cards to slide them all out.
+const EDGE_DWELL: Duration = Duration::from_millis(150);
+
+/// Where the pointer is, as far as sliding out all the cards goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgePointer {
+    /// Against the screen edge, beside the cards.
+    AtEdge,
+    /// Over the drawer: the cards and the gaps between and beside them.
+    InDrawer,
+    Away,
+}
 
 /// A window in the drawer, as far as laying out its card goes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +146,14 @@ pub struct Drawer {
     outlines: RefCell<HashMap<MappedId, SolidColorBuffer>>,
     /// Titles by window, title and scale.
     captions: LabelCache<(MappedId, String, NotNan<f64>)>,
+    /// Icon files by app id.
+    icons: AppIcons,
+    /// Loaded icons by app id and size in physical pixels.
+    icon_buffers: LabelCache<(String, i32)>,
+    /// Since when the pointer has been against the edge, until the cards slide out.
+    edge_since: Option<Duration>,
+    /// Whether pushing against the edge slid out all the cards.
+    revealed: bool,
 }
 
 impl Drawer {
@@ -156,6 +181,30 @@ impl Drawer {
         if self.dragging.is_some_and(|(id, _)| !present.contains(&id)) {
             self.dragging = None;
         }
+        if present.is_empty() {
+            self.edge_since = None;
+            self.revealed = false;
+        }
+    }
+
+    /// Updates where the pointer is for sliding out all the cards. Returns whether anything
+    /// changed.
+    pub fn set_edge_pointer(&mut self, state: EdgePointer, now: Duration) -> bool {
+        let before = (self.edge_since, self.revealed);
+        match state {
+            EdgePointer::AtEdge => {
+                if !self.revealed && self.edge_since.is_none() {
+                    self.edge_since = Some(now);
+                }
+            }
+            // Moving onto the cards keeps them out, but leaving the edge early calls it off.
+            EdgePointer::InDrawer => self.edge_since = None,
+            EdgePointer::Away => {
+                self.edge_since = None;
+                self.revealed = false;
+            }
+        }
+        before != (self.edge_since, self.revealed)
     }
 
     /// Windows in the drawer, newest first.
@@ -192,7 +241,7 @@ impl Drawer {
 
     /// Whether this card should be slid out.
     fn is_out(&self, id: MappedId) -> bool {
-        self.popped || self.hovered() == Some(id) || self.dragging() == Some(id)
+        self.popped || self.revealed || self.hovered() == Some(id) || self.dragging() == Some(id)
     }
 
     /// Cycles the cards by this many, when they don't all fit.
@@ -255,6 +304,15 @@ impl Drawer {
         self.last_tick = Some(now);
         let step = dt.as_secs_f64() / SLIDE.as_secs_f64();
 
+        // Held against the edge long enough: slide all the cards out.
+        if self
+            .edge_since
+            .is_some_and(|since| now.saturating_sub(since) >= EDGE_DWELL)
+        {
+            self.edge_since = None;
+            self.revealed = true;
+        }
+
         for &id in &self.order {
             let out = self.is_out(id);
             let extend = self.extend.entry(id).or_insert(0.);
@@ -268,6 +326,10 @@ impl Drawer {
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
+        // Keep frames coming to notice the end of the edge dwell.
+        if self.edge_since.is_some() {
+            return true;
+        }
         self.order.iter().any(|&id| {
             let extend = self.extend.get(&id).copied().unwrap_or(0.);
             if self.is_out(id) {
@@ -320,6 +382,11 @@ impl Drawer {
                 continue;
             };
             let urgent = crate::layout::LayoutElement::is_urgent(*mapped);
+            // The app icon, above its card.
+            if let Some(elem) = self.render_icon(ctx.renderer, mapped, slot.card, placement, scale)
+            {
+                push(DrawerRenderElement::Texture(elem));
+            }
             push_window_thumbnail(
                 ctx.r(),
                 mapped,
@@ -390,6 +457,96 @@ impl Drawer {
             Kind::Unspecified,
         );
         Some(PrimaryGpuTextureRenderElement(elem))
+    }
+}
+
+impl Drawer {
+    /// Renders the app icon of a window in the corner of its card.
+    fn render_icon<R: NiriRenderer>(
+        &self,
+        renderer: &mut R,
+        mapped: &Mapped,
+        card: Rectangle<f64, Logical>,
+        placement: DrawerPlacement,
+        scale: f64,
+    ) -> Option<PrimaryGpuTextureRenderElement> {
+        let app_id = with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone())?;
+        let size = f64::min(ICON, f64::min(card.size.w, card.size.h) / 2.);
+        let px = (size * scale).round() as i32;
+        if px < 1 {
+            return None;
+        }
+
+        let buffer = self.icon_buffers.get((app_id.clone(), px), || {
+            let paths = self.icons.paths(&app_id);
+            load_icon(&paths, px, scale).ok_or_else(|| anyhow::anyhow!("no icon for {app_id}"))
+        })?;
+        let texture =
+            TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
+
+        let loc = icon_loc(card, texture.logical_size(), placement.edge);
+        let loc = loc.to_physical_precise_round(scale).to_logical(scale);
+        let elem = TextureRenderElement::from_texture_buffer(
+            texture,
+            loc,
+            OPACITY,
+            None,
+            None,
+            Kind::Unspecified,
+        );
+        Some(PrimaryGpuTextureRenderElement(elem))
+    }
+}
+
+/// Where the app icon goes on a card: in the bottom corner on the side facing into the screen.
+fn icon_loc(
+    card: Rectangle<f64, Logical>,
+    size: Size<f64, Logical>,
+    edge: LimboEdge,
+) -> Point<f64, Logical> {
+    let y = card.loc.y + card.size.h - ICON_INSET - size.h;
+    match edge {
+        LimboEdge::Right | LimboEdge::Bottom => Point::from((card.loc.x + ICON_INSET, y)),
+        LimboEdge::Left => Point::from((card.loc.x + card.size.w - ICON_INSET - size.w, y)),
+    }
+}
+
+/// Where the pointer is, at this output-local position, for sliding out all the cards.
+pub fn edge_pointer(
+    edge: LimboEdge,
+    output_size: Size<f64, Logical>,
+    slots: &[Slot],
+    pos: Point<f64, Logical>,
+) -> EdgePointer {
+    let Some(first) = slots.first() else {
+        return EdgePointer::Away;
+    };
+
+    // Beside the cards: between the start of the first and the end of the last.
+    let along = along_edge(edge, pos);
+    let (start, end) = slots
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(start, end), slot| {
+            let card_start = along_edge(edge, slot.card.loc);
+            let card_end = along_edge(edge, slot.card.loc + slot.card.size.to_point());
+            (start.min(card_start), end.max(card_end))
+        });
+    let at_edge = match edge {
+        LimboEdge::Right => pos.x >= output_size.w - 1.,
+        LimboEdge::Left => pos.x < 1.,
+        LimboEdge::Bottom => pos.y >= output_size.h - 1.,
+    };
+    if at_edge && (start..=end).contains(&along) {
+        return EdgePointer::AtEdge;
+    }
+
+    let area = slots
+        .iter()
+        .fold(first.hit, |area, slot| area.merge(slot.hit));
+    if area.contains(pos) {
+        EdgePointer::InDrawer
+    } else {
+        EdgePointer::Away
     }
 }
 
@@ -927,6 +1084,104 @@ mod tests {
             insertion_point(&slots[..1], LimboEdge::Right, ids[0], 0.),
             None
         );
+    }
+
+    #[test]
+    fn icon_sits_in_the_inner_bottom_corner() {
+        let card = Rectangle::new(Point::from((1700., 500.)), Size::from((200., 100.)));
+        let size = Size::from((32., 32.));
+        assert_eq!(
+            icon_loc(card, size, LimboEdge::Right),
+            Point::from((1706., 562.))
+        );
+        assert_eq!(
+            icon_loc(card, size, LimboEdge::Bottom),
+            Point::from((1706., 562.))
+        );
+        assert_eq!(
+            icon_loc(card, size, LimboEdge::Left),
+            Point::from((1862., 562.))
+        );
+    }
+
+    #[test]
+    fn edge_pointer_needs_the_edge_beside_the_cards() {
+        let ids = ids(2);
+        let right = at(LimboEdge::Right);
+        let shown = slots(output(), &items(&ids), right, 0, None, |_| 0.);
+        let first = shown[0].card;
+        let y = first.loc.y + 10.;
+        let state = |x, y| edge_pointer(LimboEdge::Right, output(), &shown, Point::from((x, y)));
+
+        assert_eq!(state(1919.5, y), EdgePointer::AtEdge);
+        // Above the cards, the edge doesn't count.
+        assert_eq!(state(1919.5, 10.), EdgePointer::Away);
+        // On the peeking strip, but off the edge.
+        assert_eq!(state(1915., y), EdgePointer::InDrawer);
+        // In the gap between the cards.
+        assert_eq!(
+            state(1915., first.loc.y + first.size.h + GAP / 2.),
+            EdgePointer::InDrawer
+        );
+        assert_eq!(state(1000., y), EdgePointer::Away);
+        assert_eq!(
+            edge_pointer(LimboEdge::Right, output(), &[], Point::from((1919.5, y))),
+            EdgePointer::Away
+        );
+
+        let left = slots(output(), &items(&ids), at(LimboEdge::Left), 0, None, |_| 0.);
+        let pos = Point::from((0.5, left[0].card.loc.y + 10.));
+        assert_eq!(
+            edge_pointer(LimboEdge::Left, output(), &left, pos),
+            EdgePointer::AtEdge
+        );
+        let bottom = slots(
+            output(),
+            &items(&ids),
+            at(LimboEdge::Bottom),
+            0,
+            None,
+            |_| 0.,
+        );
+        let pos = Point::from((bottom[0].card.loc.x + 10., 1079.5));
+        assert_eq!(
+            edge_pointer(LimboEdge::Bottom, output(), &bottom, pos),
+            EdgePointer::AtEdge
+        );
+    }
+
+    #[test]
+    fn holding_the_edge_slides_all_cards_out() {
+        let mut drawer = Drawer::new();
+        let ids = ids(2);
+        drawer.sync(&ids);
+        drawer.advance_animations(Duration::ZERO);
+
+        // Not before the dwell.
+        let ms = Duration::from_millis;
+        assert!(drawer.set_edge_pointer(EdgePointer::AtEdge, ms(0)));
+        assert!(drawer.are_animations_ongoing());
+        drawer.advance_animations(ms(100));
+        assert!(!drawer.revealed);
+        // Staying there doesn't restart the dwell.
+        assert!(!drawer.set_edge_pointer(EdgePointer::AtEdge, ms(100)));
+        drawer.advance_animations(ms(150));
+        assert!(drawer.revealed);
+        drawer.advance_animations(ms(150) + SLIDE);
+        assert!(ids.iter().all(|id| drawer.extend[id] == 1.));
+
+        // Moving onto the cards keeps them out, leaving puts them back.
+        drawer.set_edge_pointer(EdgePointer::InDrawer, ms(400));
+        assert!(drawer.revealed);
+        assert!(drawer.set_edge_pointer(EdgePointer::Away, ms(500)));
+        assert!(!drawer.revealed);
+
+        // Leaving the edge before the dwell calls it off.
+        drawer.set_edge_pointer(EdgePointer::AtEdge, ms(1000));
+        drawer.set_edge_pointer(EdgePointer::InDrawer, ms(1050));
+        drawer.advance_animations(ms(1200));
+        assert!(!drawer.revealed);
+        assert!(drawer.edge_since.is_none());
     }
 
     #[test]

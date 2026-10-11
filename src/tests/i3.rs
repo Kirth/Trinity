@@ -2,7 +2,7 @@ use client::ClientId;
 use insta::assert_snapshot;
 use niri_config::Config;
 use smithay::input::pointer::GrabStartData as PointerGrabStartData;
-use smithay::utils::Point;
+use smithay::utils::{Point, Size};
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::*;
@@ -1156,6 +1156,45 @@ fn clicking_a_card_brings_it_out() {
     f.double_roundtrip(id);
     assert!(!in_limbo(&mut f, order[2]));
     assert_eq!(focused_id(&mut f), Some(order[2]));
+}
+
+#[test]
+fn pushing_against_the_edge_slides_all_cards_out() {
+    use crate::ui::drawer::{edge_pointer, EdgePointer};
+
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+    three_in_limbo(&mut f, id);
+
+    // Against the right edge, level with the middle card.
+    let niri = f.niri();
+    let slots = niri.drawer_slots(&output);
+    let pos = Point::from((1919.5, slots[1].card.loc.y + 10.));
+    let state = edge_pointer(
+        niri_config::LimboEdge::Right,
+        Size::from((1920., 1080.)),
+        &slots,
+        pos,
+    );
+    assert_eq!(state, EdgePointer::AtEdge);
+
+    niri.advance_animations();
+    let now = niri.clock.now();
+    niri.drawer.set_edge_pointer(state, now);
+    let start = niri.clock.now_unadjusted();
+    // Past the dwell, then past the slide.
+    for ms in [200, 400] {
+        niri.clock
+            .set_unadjusted(start + std::time::Duration::from_millis(ms));
+        niri.advance_animations();
+    }
+    let slots = niri.drawer_slots(&output);
+    assert_eq!(slots.len(), 3);
+    for slot in slots {
+        assert!(slot.card.loc.x < 1920. - 30., "{:?}", slot.card);
+    }
 }
 
 #[test]

@@ -84,6 +84,8 @@ Poofed one by accident? Press `move-column-left` within half a second, and the w
 Windows in limbo peek out as thin, slightly see-through live thumbnails at the right edge of the rightmost output, like a drawer, with the newest on top.
 Hover one to slide it out, lifting off the edge by half a centimetre; click it to bring the window next to the focused one.
 Drag a card along the drawer to rearrange the cards, or drag it into the screen to pull its window out and drop it anywhere.
+Cards show their app's icon, from its desktop entry and your GTK icon theme.
+Push the cursor against the edge beside the cards for a moment to slide them all out; they stay out while the cursor is over the drawer.
 A slid-out card shows its window's title next to it, and a middle click on a card closes its window.
 A card whose window wants attention sticks out further, outlined in the border's `urgent-color`.
 With more windows in limbo than fit legibly, the drawer shows as many as it can; scroll over it to cycle through the rest.

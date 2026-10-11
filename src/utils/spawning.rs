@@ -15,6 +15,7 @@ use crate::utils::expand_home;
 
 pub static REMOVE_ENV_RUST_BACKTRACE: AtomicBool = AtomicBool::new(false);
 pub static REMOVE_ENV_RUST_LIB_BACKTRACE: AtomicBool = AtomicBool::new(false);
+pub static REMOVE_ENV_GDK_PIXBUF_MODULE_FILE: AtomicBool = AtomicBool::new(false);
 pub static CHILD_ENV: RwLock<Environment> = RwLock::new(Environment(Vec::new()));
 pub static CHILD_DISPLAY: RwLock<Option<String>> = RwLock::new(None);
 
@@ -125,6 +126,10 @@ fn spawn_sync(
     }
     if REMOVE_ENV_RUST_LIB_BACKTRACE.load(Ordering::Relaxed) {
         process.env_remove("RUST_LIB_BACKTRACE");
+    }
+    // Same for the gdk-pixbuf loaders that niri set for itself.
+    if REMOVE_ENV_GDK_PIXBUF_MODULE_FILE.load(Ordering::Relaxed) {
+        process.env_remove("GDK_PIXBUF_MODULE_FILE");
     }
 
     // Remove the systemd NOTIFY_SOCKET variable.
