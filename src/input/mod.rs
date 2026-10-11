@@ -838,17 +838,21 @@ impl State {
         // Pushing against the edge beside the cards slides them all out.
         if !pointer.is_grabbed() {
             let edge = self.niri.config.borrow().limbo.edge;
-            let state = match self.niri.output_under(pos) {
-                Some((output, pos)) => crate::ui::drawer::edge_pointer(
-                    edge,
-                    crate::utils::output_size(output),
-                    &self.niri.drawer_slots(output),
-                    pos,
-                ),
-                None => crate::ui::drawer::EdgePointer::Away,
-            };
             let now = self.niri.clock.now();
-            if self.niri.drawer.set_edge_pointer(state, now) {
+            let changed = match self.niri.output_under(pos) {
+                Some((output, pos)) => {
+                    let state = crate::ui::drawer::edge_pointer(
+                        edge,
+                        crate::utils::output_size(output),
+                        &self.niri.drawer_slots(output),
+                        pos,
+                    );
+                    let output = output.clone();
+                    self.niri.drawer.set_edge_pointer(&output, state, now)
+                }
+                None => self.niri.drawer.clear_edge_pointer(),
+            };
+            if changed {
                 self.niri.queue_redraw_all();
             }
         }

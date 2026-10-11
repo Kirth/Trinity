@@ -4370,7 +4370,8 @@ impl Niri {
         let limbo: Vec<_> = self.layout.limbo_windows().map(|m| m.id()).collect();
         self.drawer.sync(&limbo);
         self.drawer.set_popped(self.ace_hints.is_open());
-        self.drawer.advance_animations(self.clock.now());
+        let outputs: Vec<_> = self.global_space.outputs().cloned().collect();
+        self.drawer.advance_animations(self.clock.now(), &outputs);
 
         for state in self.output_state.values_mut() {
             if let Some(transition) = &mut state.screen_transition {
@@ -4630,6 +4631,7 @@ impl Niri {
         if !drawer_windows.is_empty() {
             self.drawer.render(
                 ctx.r(),
+                output,
                 output_size(output),
                 &drawer_windows,
                 self.drawer_placement(output),
@@ -6676,8 +6678,12 @@ impl Niri {
             .iter()
             .map(|mapped| crate::ui::drawer::Item::new(mapped))
             .collect();
-        self.drawer
-            .slots(output_size(output), &items, self.drawer_placement(output))
+        self.drawer.slots(
+            output,
+            output_size(output),
+            &items,
+            self.drawer_placement(output),
+        )
     }
 
     /// Windows in limbo, shown in the drawer on this output, newest first.
@@ -6713,8 +6719,12 @@ impl Niri {
             .iter()
             .map(|mapped| crate::ui::drawer::Item::new(mapped))
             .collect();
-        self.drawer
-            .overflows(output_size(output), &items, self.drawer_placement(output))
+        self.drawer.overflows(
+            output,
+            output_size(output),
+            &items,
+            self.drawer_placement(output),
+        )
     }
 
     /// Where the limbo drawer goes on this output.
@@ -6751,6 +6761,7 @@ impl Niri {
             .map(|mapped| crate::ui::drawer::Item::new(mapped))
             .collect();
         self.drawer.window_under(
+            output,
             output_size(output),
             &items,
             self.drawer_placement(output),

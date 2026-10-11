@@ -137,10 +137,13 @@ pub struct Drawer {
     popped: bool,
     /// Index of the first card shown, when they don't all fit.
     offset: usize,
-    /// The card being dragged along the drawer, with where it starts along the edge.
-    dragging: Option<(MappedId, f64)>,
-    /// How far each card has slid out, from 0 to 1.
-    extend: HashMap<MappedId, f64>,
+    /// The card being dragged along the drawer on an output, with where it starts along the
+    /// edge.
+    dragging: Option<(Output, MappedId, f64)>,
+    /// How far each card has slid out on each output, from 0 to 1.
+    extend: HashMap<(Output, MappedId), f64>,
+    /// Outputs the cards animate on, as of the last tick.
+    outputs: Vec<Output>,
     last_tick: Option<Duration>,
     /// Outline behind each card, kept so that it keeps its element id.
     outlines: RefCell<HashMap<MappedId, SolidColorBuffer>>,
@@ -150,10 +153,11 @@ pub struct Drawer {
     icons: AppIcons,
     /// Loaded icons by app id and size in physical pixels.
     icon_buffers: LabelCache<(String, i32)>,
-    /// Since when the pointer has been against the edge, until the cards slide out.
-    edge_since: Option<Duration>,
-    /// Whether pushing against the edge slid out all the cards.
-    revealed: bool,
+    /// The output whose edge the pointer has been against, and since when, until the cards slide
+    /// out.
+    edge_since: Option<(Output, Duration)>,
+    /// The output where pushing against the edge slid out all the cards.
+    revealed: Option<Output>,
 }
 
 impl Drawer {
@@ -169,7 +173,7 @@ impl Drawer {
         }
         self.offset = self.offset.checked_rem(present.len()).unwrap_or(0);
         self.order = present.to_vec();
-        self.extend.retain(|id, _| present.contains(id));
+        self.extend.retain(|(_, id), _| present.contains(id));
         self.outlines.get_mut().retain(|id, _| present.contains(id));
         if self
             .hovered
@@ -178,33 +182,53 @@ impl Drawer {
         {
             self.hovered = None;
         }
-        if self.dragging.is_some_and(|(id, _)| !present.contains(&id)) {
+        if self
+            .dragging
+            .as_ref()
+            .is_some_and(|(_, id, _)| !present.contains(id))
+        {
             self.dragging = None;
         }
         if present.is_empty() {
             self.edge_since = None;
-            self.revealed = false;
+            self.revealed = None;
         }
     }
 
-    /// Updates where the pointer is for sliding out all the cards. Returns whether anything
-    /// changed.
-    pub fn set_edge_pointer(&mut self, state: EdgePointer, now: Duration) -> bool {
-        let before = (self.edge_since, self.revealed);
+    /// Updates where the pointer is, on this output, for sliding out all the cards. Returns
+    /// whether anything changed.
+    pub fn set_edge_pointer(&mut self, output: &Output, state: EdgePointer, now: Duration) -> bool {
+        let before = (self.edge_since.clone(), self.revealed.clone());
         match state {
             EdgePointer::AtEdge => {
-                if !self.revealed && self.edge_since.is_none() {
-                    self.edge_since = Some(now);
+                if self.revealed.as_ref() != Some(output) {
+                    self.revealed = None;
+                    if self.edge_since.as_ref().is_none_or(|(o, _)| o != output) {
+                        self.edge_since = Some((output.clone(), now));
+                    }
                 }
             }
             // Moving onto the cards keeps them out, but leaving the edge early calls it off.
-            EdgePointer::InDrawer => self.edge_since = None,
+            EdgePointer::InDrawer => {
+                self.edge_since = None;
+                if self.revealed.as_ref().is_some_and(|o| o != output) {
+                    self.revealed = None;
+                }
+            }
             EdgePointer::Away => {
                 self.edge_since = None;
-                self.revealed = false;
+                self.revealed = None;
             }
         }
-        before != (self.edge_since, self.revealed)
+        before.0 != self.edge_since || before.1 != self.revealed
+    }
+
+    /// The pointer isn't on any output.
+    pub fn clear_edge_pointer(&mut self) -> bool {
+        let changed = self.edge_since.is_some() || self.revealed.is_some();
+        self.edge_since = None;
+        self.revealed = None;
+        changed
     }
 
     /// Windows in the drawer, newest first.
@@ -230,18 +254,47 @@ impl Drawer {
         self.popped = popped;
     }
 
-    /// Drags a card along the drawer, to this position along the edge, or lets go of it.
-    pub fn set_dragging(&mut self, dragging: Option<(MappedId, f64)>) {
+    /// Drags a card along the drawer on an output, to this position along the edge, or lets go
+    /// of it.
+    pub fn set_dragging(&mut self, dragging: Option<(Output, MappedId, f64)>) {
         self.dragging = dragging;
     }
 
     pub fn dragging(&self) -> Option<MappedId> {
-        self.dragging.map(|(id, _)| id)
+        self.dragging.as_ref().map(|(_, id, _)| *id)
     }
 
-    /// Whether this card should be slid out.
-    fn is_out(&self, id: MappedId) -> bool {
-        self.popped || self.revealed || self.hovered() == Some(id) || self.dragging() == Some(id)
+    /// The card being dragged on this output.
+    fn dragging_on(&self, output: &Output) -> Option<(MappedId, f64)> {
+        self.dragging
+            .as_ref()
+            .filter(|(o, _, _)| o == output)
+            .map(|(_, id, at)| (*id, *at))
+    }
+
+    /// The card under the pointer on this output.
+    fn hovered_on(&self, output: &Output) -> Option<MappedId> {
+        self.hovered
+            .as_ref()
+            .filter(|(o, _)| o == output)
+            .map(|(_, id)| *id)
+    }
+
+    /// Whether this card should be slid out on this output.
+    fn is_out(&self, output: &Output, id: MappedId) -> bool {
+        self.popped
+            || self.revealed.as_ref() == Some(output)
+            || self.hovered_on(output) == Some(id)
+            || self
+                .dragging_on(output)
+                .is_some_and(|(dragged, _)| dragged == id)
+    }
+
+    fn extend_of(&self, output: &Output, id: MappedId) -> f64 {
+        self.extend
+            .get(&(output.clone(), id))
+            .copied()
+            .unwrap_or(0.)
     }
 
     /// Cycles the cards by this many, when they don't all fit.
@@ -259,6 +312,7 @@ impl Drawer {
     /// Where the shown cards go on an output, for these windows in drawer order.
     pub fn slots(
         &self,
+        output: &Output,
         output_size: Size<f64, Logical>,
         items: &[Item],
         placement: DrawerPlacement,
@@ -268,36 +322,39 @@ impl Drawer {
             items,
             placement,
             self.offset,
-            self.dragging,
-            |id| self.extend.get(&id).copied().unwrap_or(0.),
+            self.dragging_on(output),
+            |id| self.extend_of(output, id),
         )
     }
 
     /// Whether only some of the cards fit on an output.
     pub fn overflows(
         &self,
+        output: &Output,
         output_size: Size<f64, Logical>,
         items: &[Item],
         placement: DrawerPlacement,
     ) -> bool {
-        self.slots(output_size, items, placement).len() < items.len()
+        self.slots(output, output_size, items, placement).len() < items.len()
     }
 
     /// The card under this point, in output-local coordinates.
     pub fn window_under(
         &self,
+        output: &Output,
         output_size: Size<f64, Logical>,
         items: &[Item],
         placement: DrawerPlacement,
         pos: Point<f64, Logical>,
     ) -> Option<MappedId> {
-        self.slots(output_size, items, placement)
+        self.slots(output, output_size, items, placement)
             .into_iter()
             .find(|slot| slot.hit.contains(pos))
             .map(|slot| slot.id)
     }
 
-    pub fn advance_animations(&mut self, now: Duration) {
+    /// Advances the slides of the cards on these outputs.
+    pub fn advance_animations(&mut self, now: Duration, outputs: &[Output]) {
         let dt = self
             .last_tick
             .map_or(Duration::ZERO, |last| now.saturating_sub(last));
@@ -305,24 +362,27 @@ impl Drawer {
         let step = dt.as_secs_f64() / SLIDE.as_secs_f64();
 
         // Held against the edge long enough: slide all the cards out.
-        if self
-            .edge_since
-            .is_some_and(|since| now.saturating_sub(since) >= EDGE_DWELL)
-        {
-            self.edge_since = None;
-            self.revealed = true;
-        }
-
-        for &id in &self.order {
-            let out = self.is_out(id);
-            let extend = self.extend.entry(id).or_insert(0.);
-            if out {
-                *extend = (*extend + step).min(1.);
-            } else {
-                *extend = (*extend - step).max(0.);
+        if let Some((output, since)) = &self.edge_since {
+            if now.saturating_sub(*since) >= EDGE_DWELL {
+                self.revealed = Some(output.clone());
+                self.edge_since = None;
             }
         }
-        self.extend.retain(|_, extend| *extend > 0.);
+
+        self.outputs = outputs.to_vec();
+        for output in outputs {
+            for &id in &self.order {
+                let out = self.is_out(output, id);
+                let extend = self.extend.entry((output.clone(), id)).or_insert(0.);
+                if out {
+                    *extend = (*extend + step).min(1.);
+                } else {
+                    *extend = (*extend - step).max(0.);
+                }
+            }
+        }
+        self.extend
+            .retain(|(output, _), extend| *extend > 0. && outputs.contains(output));
     }
 
     pub fn are_animations_ongoing(&self) -> bool {
@@ -330,13 +390,15 @@ impl Drawer {
         if self.edge_since.is_some() {
             return true;
         }
-        self.order.iter().any(|&id| {
-            let extend = self.extend.get(&id).copied().unwrap_or(0.);
-            if self.is_out(id) {
-                extend < 1.
-            } else {
-                extend > 0.
-            }
+        self.outputs.iter().any(|output| {
+            self.order.iter().any(|&id| {
+                let extend = self.extend_of(output, id);
+                if self.is_out(output, id) {
+                    extend < 1.
+                } else {
+                    extend > 0.
+                }
+            })
         })
     }
 
@@ -345,6 +407,7 @@ impl Drawer {
     pub fn render<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
+        output: &Output,
         output_size: Size<f64, Logical>,
         windows: &[&Mapped],
         placement: DrawerPlacement,
@@ -353,12 +416,12 @@ impl Drawer {
         push: &mut dyn FnMut(DrawerRenderElement<R>),
     ) {
         let items: Vec<_> = windows.iter().map(|mapped| Item::new(mapped)).collect();
-        let slots = self.slots(output_size, &items, placement);
+        let slots = self.slots(output, output_size, &items, placement);
 
         // The title of the hovered card, on top of everything.
         let hovered = self
-            .hovered()
-            .filter(|id| self.extend.get(id).is_some_and(|e| *e > CAPTION_EXTEND));
+            .hovered_on(output)
+            .filter(|id| self.extend_of(output, *id) > CAPTION_EXTEND);
         let hovered = hovered.and_then(|id| {
             let slot = slots.iter().find(|slot| slot.id == id)?;
             let mapped = windows.iter().find(|mapped| mapped.id() == id)?;
@@ -374,7 +437,7 @@ impl Drawer {
 
         // The dragged card goes first, to draw above the others.
         let mut slots = slots;
-        if let Some(id) = self.dragging() {
+        if let Some((id, _)) = self.dragging_on(output) {
             slots.sort_by_key(|slot| slot.id != id);
         }
         for slot in slots {
@@ -760,6 +823,19 @@ mod tests {
         Size::from((1920., 1080.))
     }
 
+    fn screen(name: &str) -> Output {
+        Output::new(
+            name.to_owned(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
     const MARGIN: f64 = 19.;
 
     fn at(edge: LimboEdge) -> DrawerPlacement {
@@ -882,17 +958,18 @@ mod tests {
         drawer.sync(&ids);
         let items = items(&ids);
         let right = at(LimboEdge::Right);
+        let screen = screen("A");
         let y = 540.;
         assert_eq!(
-            drawer.window_under(output(), &items, right, Point::from((1915., y))),
+            drawer.window_under(&screen, output(), &items, right, Point::from((1915., y))),
             Some(ids[0])
         );
         assert_eq!(
-            drawer.window_under(output(), &items, right, Point::from((1900., y))),
+            drawer.window_under(&screen, output(), &items, right, Point::from((1900., y))),
             None
         );
         assert_eq!(
-            drawer.window_under(output(), &items, right, Point::from((1915., 10.))),
+            drawer.window_under(&screen, output(), &items, right, Point::from((1915., 10.))),
             None
         );
     }
@@ -901,17 +978,20 @@ mod tests {
     fn popped_drawer_slides_every_card_out() {
         let mut drawer = Drawer::new();
         let ids = ids(2);
+        let screens = [screen("A"), screen("B")];
         drawer.sync(&ids);
-        drawer.advance_animations(Duration::ZERO);
+        drawer.advance_animations(Duration::ZERO, &screens);
 
         drawer.set_popped(true);
         assert!(drawer.are_animations_ongoing());
-        drawer.advance_animations(SLIDE);
-        assert!(ids.iter().all(|id| drawer.extend[id] == 1.));
+        drawer.advance_animations(SLIDE, &screens);
+        assert!(screens
+            .iter()
+            .all(|s| ids.iter().all(|id| drawer.extend_of(s, *id) == 1.)));
         assert!(!drawer.are_animations_ongoing());
 
         drawer.set_popped(false);
-        drawer.advance_animations(SLIDE * 2);
+        drawer.advance_animations(SLIDE * 2, &screens);
         assert!(drawer.extend.is_empty());
         assert!(!drawer.are_animations_ongoing());
     }
@@ -1033,12 +1113,15 @@ mod tests {
     fn dragged_card_stays_out() {
         let mut drawer = Drawer::new();
         let ids = ids(2);
+        let screens = [screen("A"), screen("B")];
         drawer.sync(&ids);
-        drawer.advance_animations(Duration::ZERO);
-        drawer.set_dragging(Some((ids[0], 0.)));
-        drawer.advance_animations(SLIDE);
-        assert_eq!(drawer.extend[&ids[0]], 1.);
-        assert!(!drawer.extend.contains_key(&ids[1]));
+        drawer.advance_animations(Duration::ZERO, &screens);
+        drawer.set_dragging(Some((screens[0].clone(), ids[0], 0.)));
+        drawer.advance_animations(SLIDE, &screens);
+        assert_eq!(drawer.extend_of(&screens[0], ids[0]), 1.);
+        assert_eq!(drawer.extend_of(&screens[0], ids[1]), 0.);
+        // Only on the output it's dragged on.
+        assert_eq!(drawer.extend_of(&screens[1], ids[0]), 0.);
     }
 
     #[test]
@@ -1154,33 +1237,39 @@ mod tests {
     fn holding_the_edge_slides_all_cards_out() {
         let mut drawer = Drawer::new();
         let ids = ids(2);
+        let screens = [screen("A"), screen("B")];
+        let a = &screens[0];
         drawer.sync(&ids);
-        drawer.advance_animations(Duration::ZERO);
+        drawer.advance_animations(Duration::ZERO, &screens);
 
         // Not before the dwell.
         let ms = Duration::from_millis;
-        assert!(drawer.set_edge_pointer(EdgePointer::AtEdge, ms(0)));
+        assert!(drawer.set_edge_pointer(a, EdgePointer::AtEdge, ms(0)));
         assert!(drawer.are_animations_ongoing());
-        drawer.advance_animations(ms(100));
-        assert!(!drawer.revealed);
+        drawer.advance_animations(ms(100), &screens);
+        assert!(drawer.revealed.is_none());
         // Staying there doesn't restart the dwell.
-        assert!(!drawer.set_edge_pointer(EdgePointer::AtEdge, ms(100)));
-        drawer.advance_animations(ms(150));
-        assert!(drawer.revealed);
-        drawer.advance_animations(ms(150) + SLIDE);
-        assert!(ids.iter().all(|id| drawer.extend[id] == 1.));
+        assert!(!drawer.set_edge_pointer(a, EdgePointer::AtEdge, ms(100)));
+        drawer.advance_animations(ms(150), &screens);
+        assert_eq!(drawer.revealed.as_ref(), Some(a));
+        drawer.advance_animations(ms(150) + SLIDE, &screens);
+        assert!(ids.iter().all(|id| drawer.extend_of(a, *id) == 1.));
+        // Only on the output pushed against.
+        assert!(ids
+            .iter()
+            .all(|id| drawer.extend_of(&screens[1], *id) == 0.));
 
         // Moving onto the cards keeps them out, leaving puts them back.
-        drawer.set_edge_pointer(EdgePointer::InDrawer, ms(400));
-        assert!(drawer.revealed);
-        assert!(drawer.set_edge_pointer(EdgePointer::Away, ms(500)));
-        assert!(!drawer.revealed);
+        drawer.set_edge_pointer(a, EdgePointer::InDrawer, ms(400));
+        assert_eq!(drawer.revealed.as_ref(), Some(a));
+        assert!(drawer.set_edge_pointer(a, EdgePointer::Away, ms(500)));
+        assert!(drawer.revealed.is_none());
 
         // Leaving the edge before the dwell calls it off.
-        drawer.set_edge_pointer(EdgePointer::AtEdge, ms(1000));
-        drawer.set_edge_pointer(EdgePointer::InDrawer, ms(1050));
-        drawer.advance_animations(ms(1200));
-        assert!(!drawer.revealed);
+        drawer.set_edge_pointer(a, EdgePointer::AtEdge, ms(1000));
+        drawer.set_edge_pointer(a, EdgePointer::InDrawer, ms(1050));
+        drawer.advance_animations(ms(1200), &screens);
+        assert!(drawer.revealed.is_none());
         assert!(drawer.edge_since.is_none());
     }
 
@@ -1190,9 +1279,33 @@ mod tests {
         let ids = ids(2);
         drawer.sync(&ids);
         drawer.set_hovered(None);
-        drawer.extend.insert(ids[0], 0.5);
+        let a = screen("A");
+        drawer.extend.insert((a.clone(), ids[0]), 0.5);
         drawer.sync(&ids[1..]);
         assert_eq!(drawer.order(), [ids[1]]);
-        assert!(!drawer.extend.contains_key(&ids[0]));
+        assert!(!drawer.extend.contains_key(&(a, ids[0])));
+    }
+
+    #[test]
+    fn hovering_slides_out_only_on_that_output() {
+        let mut drawer = Drawer::new();
+        let ids = ids(2);
+        let screens = [screen("A"), screen("B")];
+        drawer.sync(&ids);
+        drawer.advance_animations(Duration::ZERO, &screens);
+
+        drawer.set_hovered(Some((screens[0].clone(), ids[0])));
+        drawer.advance_animations(SLIDE, &screens);
+        assert_eq!(drawer.extend_of(&screens[0], ids[0]), 1.);
+        assert_eq!(drawer.extend_of(&screens[0], ids[1]), 0.);
+        assert_eq!(drawer.extend_of(&screens[1], ids[0]), 0.);
+        assert!(!drawer.are_animations_ongoing());
+
+        let items = items(&ids);
+        let right = at(LimboEdge::Right);
+        let on_a = drawer.slots(&screens[0], output(), &items, right);
+        let on_b = drawer.slots(&screens[1], output(), &items, right);
+        assert!(on_a[0].card.loc.x < 1920. - PEEK);
+        assert_eq!(on_b[0].card.loc.x, 1920. - PEEK);
     }
 }

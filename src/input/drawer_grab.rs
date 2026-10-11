@@ -118,9 +118,11 @@ impl DrawerGrab {
         }
 
         // Rearranging: the card follows the pointer, and moves in limbo to where it's dropped.
-        data.niri
-            .drawer
-            .set_dragging(Some((self.id, along - self.grab_offset)));
+        data.niri.drawer.set_dragging(Some((
+            self.output.clone(),
+            self.id,
+            along - self.grab_offset,
+        )));
         if let Some(insert) = insertion_point(&slots, edge, self.id, along) {
             reorder(data, self.id, insert);
         }

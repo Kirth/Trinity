@@ -1182,7 +1182,7 @@ fn pushing_against_the_edge_slides_all_cards_out() {
 
     niri.advance_animations();
     let now = niri.clock.now();
-    niri.drawer.set_edge_pointer(state, now);
+    niri.drawer.set_edge_pointer(&output, state, now);
     let start = niri.clock.now_unadjusted();
     // Past the dwell, then past the slide.
     for ms in [200, 400] {
