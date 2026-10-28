@@ -4997,7 +4997,7 @@ impl Niri {
             state.unfinished_animations_remain |= self.screenshot_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.poof.are_animations_ongoing(output);
-            state.unfinished_animations_remain |= self.drawer.are_animations_ongoing();
+            state.unfinished_animations_remain |= self.drawer.are_animations_ongoing(output);
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
             // Also keep redrawing if the current cursor is animated.

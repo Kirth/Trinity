@@ -397,20 +397,22 @@ impl Drawer {
             .retain(|(output, _), extend| *extend > 0. && outputs.contains(output));
     }
 
-    pub fn are_animations_ongoing(&self) -> bool {
+    /// Whether cards are still sliding on this output.
+    pub fn are_animations_ongoing(&self, output: &Output) -> bool {
         // Keep frames coming to notice the end of the edge dwell.
-        if self.edge_since.is_some() {
+        if self.edge_since.as_ref().is_some_and(|(o, _)| o == output) {
             return true;
         }
-        self.outputs.iter().any(|output| {
-            self.order.iter().any(|&id| {
-                let extend = self.extend_of(output, id);
-                if self.is_out(output, id) {
-                    extend < 1.
-                } else {
-                    extend > 0.
-                }
-            })
+        if !self.outputs.contains(output) {
+            return false;
+        }
+        self.order.iter().any(|&id| {
+            let extend = self.extend_of(output, id);
+            if self.is_out(output, id) {
+                extend < 1.
+            } else {
+                extend > 0.
+            }
         })
     }
 
@@ -1089,17 +1091,17 @@ mod tests {
         drawer.advance_animations(Duration::ZERO, &screens);
 
         drawer.set_popped(true);
-        assert!(drawer.are_animations_ongoing());
+        assert!(screens.iter().all(|s| drawer.are_animations_ongoing(s)));
         drawer.advance_animations(SLIDE, &screens);
         assert!(screens
             .iter()
             .all(|s| ids.iter().all(|id| drawer.extend_of(s, *id) == 1.)));
-        assert!(!drawer.are_animations_ongoing());
+        assert!(!screens.iter().any(|s| drawer.are_animations_ongoing(s)));
 
         drawer.set_popped(false);
         drawer.advance_animations(SLIDE * 2, &screens);
         assert!(drawer.extend.is_empty());
-        assert!(!drawer.are_animations_ongoing());
+        assert!(!screens.iter().any(|s| drawer.are_animations_ongoing(s)));
     }
 
     #[test]
@@ -1351,7 +1353,9 @@ mod tests {
         // Not before the dwell.
         let ms = Duration::from_millis;
         assert!(drawer.set_edge_pointer(a, EdgePointer::AtEdge, ms(0)));
-        assert!(drawer.are_animations_ongoing());
+        assert!(drawer.are_animations_ongoing(a));
+        // Only the output with the pointer against its edge keeps redrawing.
+        assert!(!drawer.are_animations_ongoing(&screens[1]));
         drawer.advance_animations(ms(100), &screens);
         assert!(drawer.revealed.is_none());
         // Staying there doesn't restart the dwell.
@@ -1405,7 +1409,7 @@ mod tests {
         assert_eq!(drawer.extend_of(&screens[0], ids[0]), 1.);
         assert_eq!(drawer.extend_of(&screens[0], ids[1]), 0.);
         assert_eq!(drawer.extend_of(&screens[1], ids[0]), 0.);
-        assert!(!drawer.are_animations_ongoing());
+        assert!(!screens.iter().any(|s| drawer.are_animations_ongoing(s)));
 
         let items = items(&ids);
         let right = at(LimboEdge::Right);
