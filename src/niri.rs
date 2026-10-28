@@ -1160,19 +1160,24 @@ impl State {
         windows.sort_by(|(_, a), (_, b)| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
         let mut ids: Vec<_> = windows.into_iter().map(|(id, _)| id).collect();
 
-        // Then the windows in the limbo drawer, which slides out while the hints are shown.
+        // Then the windows on cards: in the strips, or in the limbo drawer, which slides out
+        // while the hints are shown. Limbo goes newest first.
         let in_drawer: Vec<_> = niri
             .global_space
             .outputs()
             .flat_map(|output| niri.ace_hint_drawer_cards(output))
             .map(|(id, _)| id)
             .collect();
-        ids.extend(
-            niri.layout
-                .limbo_windows()
-                .map(|mapped| mapped.id())
-                .filter(|id| in_drawer.contains(id)),
-        );
+        if niri.config.borrow().limbo.on {
+            ids.extend(
+                niri.layout
+                    .limbo_windows()
+                    .map(|mapped| mapped.id())
+                    .filter(|id| in_drawer.contains(id)),
+            );
+        } else {
+            ids.extend(in_drawer);
+        }
 
         match ids.as_slice() {
             [] => (),

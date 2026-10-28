@@ -1481,3 +1481,28 @@ fn overview_shows_each_workspace_strip() {
     assert_eq!(slots.len(), 1);
     assert!(band.contains_rect(slots[0].card));
 }
+
+#[test]
+fn hints_label_strip_windows_last() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let _third = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+    assert_eq!(strip_ids(&mut f), [ids[2]]);
+
+    f.niri_state().open_ace_hints();
+    let niri = f.niri();
+    assert_eq!(niri.ace_hints.label_for(ids[0]), Some(("a", 0)));
+    assert_eq!(niri.ace_hints.label_for(ids[1]), Some(("s", 0)));
+    assert_eq!(niri.ace_hints.label_for(ids[2]), Some(("d", 0)));
+
+    // Typing its label swaps the window in.
+    tap_key(&mut f, "AC03"); // d
+    assert_eq!(focused_id(&mut f), Some(ids[2]));
+    assert_eq!(strip_ids(&mut f).len(), 1);
+}
