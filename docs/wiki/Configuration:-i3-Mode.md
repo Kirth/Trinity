@@ -70,9 +70,54 @@ binds {
 
 `pushaway` can only be set in the top-level `layout {}` section, and has no effect in the scrolling layout.
 
+#### The strip
+
+Each workspace has a strip at its right edge for windows you want out of the way for now, but not out of sight.
+Windows in the strip show as live thumbnails, newest on top, and the rest of the workspace keeps its usual layout in the room that's left.
+With no windows in the strip, there's no strip, and the layout gets the whole width back.
+The last window outside the strip never goes in: if it closes, the newest window in the strip comes back in its place.
+
+To set a window aside, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies into the strip in a puff of smoke.
+Holding the key down doesn't count.
+You can also throw a window there with the mouse: drag it and let go while it's moving quickly into the right edge of the screen.
+Set one aside by accident? Press `move-column-left` within half a second, and the window comes back exactly where it was.
+
+Click a thumbnail to swap its window with the focused one: it takes that window's place in the layout, and the focused window goes to the top of the strip.
+Shift+click brings it in next to the focused window instead, without swapping.
+Drag a thumbnail along the strip to rearrange it, or into the screen to pull its window out and drop it anywhere.
+Hover one to see its window's title, middle-click it to close the window, and scroll over the strip to cycle through the thumbnails when they don't all fit.
+Activating a window in the strip any other way, like clicking its notification or `niri msg action focus-window`, also swaps it in.
+
+Two actions swap from the keyboard:
+
+- `swap-with-strip N` swaps the Nth window in the strip, counting from 1 at the top. Since the swapped-out window goes to the top, `swap-with-strip 1` goes back and forth between two windows.
+- `cycle-strip` swaps the bottom window in, so pressing it repeatedly walks through every window on the workspace.
+
+```kdl
+binds {
+    Mod+Tab { cycle-strip; }
+    Mod+Alt+1 { swap-with-strip 1; }
+    Mod+Alt+2 { swap-with-strip 2; }
+}
+```
+
+The limbo actions below work on the strip too while limbo is off: `move-window-to-limbo` sets a window aside, and `pull-from-limbo` and `toggle-limbo-window` bring the newest one back next to the focused window.
+
+The overview shows each workspace with its strip.
+Thumbnails in the strip update a couple of times a second, to save battery.
+`niri msg windows` lists windows in the strip on their workspace.
+
 #### Limbo
 
 Limbo is a hidden place for windows you want out of the way: it isn't a workspace, so it doesn't show up in your bar or in the Alt-Tab switcher.
+It's off by default, in favour of [the strip](#the-strip).
+Turn it on to send windows there instead:
+
+```kdl
+limbo {
+    on
+}
+```
 
 To send a window there, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies off the right edge in a puff of smoke.
 Holding the key down doesn't count, and focus stays on the current workspace.
@@ -99,6 +144,7 @@ The poof gesture and flinging always use the right edge.
 
 ```kdl
 limbo {
+    on
     // Where the drawer of windows in limbo sits: "left", "right" (default) or "bottom".
     edge "bottom"
 }
@@ -228,7 +274,7 @@ Resize mode also works for floating windows and in the scrolling layout.
 Type a hint to focus its window: the hints use the keys <kbd>a</kbd> <kbd>s</kbd> <kbd>d</kbd> <kbd>f</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
 With more than seven windows, hints are two keys long, and the first key hides the hints that no longer match.
 Windows hidden behind a fullscreen or maximized window are drawn faintly on top of it while the hints are shown, so you can see which window a hint would bring forward.
-The [limbo](#limbo) drawer slides all the way out while the hints are shown, and its windows get hints too, after all the others; picking one brings it out of limbo.
+Windows in [the strip](#the-strip), or in the [limbo](#limbo) drawer, which slides all the way out while the hints are shown, get hints too, after all the others; picking one brings it back.
 Any other key, <kbd>Escape</kbd> or a click cancels.
 
 ```kdl
@@ -286,5 +332,5 @@ A new window opens right after the focused window, in the same container: to its
 ### Differences from i3
 
 - Tabs show as colored bars without window titles.
-- Instead of i3's scratchpad there's [limbo](#limbo), a hidden place you send windows to with a gesture and get them back from with a drawer at the screen edge.
+- Instead of i3's scratchpad there's [the strip](#the-strip), where each workspace keeps the windows you set aside as live thumbnails, and optionally [limbo](#limbo), a hidden place you send windows to with a gesture and get them back from with a drawer at the screen edge.
 - There are no marks or i3 IPC compatibility.
