@@ -12,6 +12,11 @@ fn i3_config() -> Config {
     Config::parse_mem(r#"layout { layout-mode "i3"; }"#).unwrap()
 }
 
+/// i3 mode with limbo on, for the limbo tests.
+fn limbo_config() -> Config {
+    Config::parse_mem(r#"layout { layout-mode "i3"; }; limbo { on; }"#).unwrap()
+}
+
 /// Opens a window, commits a buffer at the size niri asked for, and returns its surface.
 fn open_window(f: &mut Fixture, id: ClientId) -> WlSurface {
     let window = f.client(id).create_window();
@@ -497,7 +502,7 @@ fn no_workspace_0(f: &mut Fixture) -> bool {
 #[test]
 fn poof_sends_window_to_limbo() {
     // The puff plays even with animations off.
-    let config = r#"layout { layout-mode "i3"; }; animations { off; }"#;
+    let config = r#"layout { layout-mode "i3"; }; limbo { on; }; animations { off; }"#;
     let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -536,7 +541,7 @@ fn poof_sends_window_to_limbo() {
 
 #[test]
 fn slow_edge_presses_dont_poof() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -614,7 +619,7 @@ fn fling(f: &mut Fixture, window: &smithay::desktop::Window, msec: u64) -> bool 
 
 #[test]
 fn undo_poof_restores_place() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -650,7 +655,7 @@ fn undo_poof_restores_place() {
 
 #[test]
 fn late_move_left_doesnt_undo() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -668,7 +673,7 @@ fn late_move_left_doesnt_undo() {
 
 #[test]
 fn fling_poofs_dragged_window() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let output = f.niri_output(1);
@@ -698,7 +703,7 @@ fn fling_poofs_dragged_window() {
 
 #[test]
 fn undo_recreates_emptied_container() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -741,7 +746,7 @@ fn drawer_ids(f: &mut Fixture) -> Vec<crate::window::mapped::MappedId> {
 
 #[test]
 fn drawer_shows_poofed_windows() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -811,7 +816,7 @@ fn drawer_shows_poofed_windows() {
 
 #[test]
 fn pull_from_drawer_focuses_window() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let output = f.niri_output(1);
@@ -847,7 +852,7 @@ fn poof(f: &mut Fixture, start_msec: u64) {
 
 #[test]
 fn poof_from_workspace_0() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -872,7 +877,7 @@ fn poof_from_workspace_0() {
 
 #[test]
 fn activating_pulls_out_of_limbo() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -898,7 +903,7 @@ fn limbo_action(f: &mut Fixture, id: ClientId, action: niri_config::Action) {
 
 #[test]
 fn move_window_to_limbo_action() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -946,7 +951,7 @@ fn limbo_actions_need_i3_mode() {
 
 #[test]
 fn pull_from_limbo_walks_the_stack() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -977,7 +982,7 @@ fn pull_from_limbo_walks_the_stack() {
 
 #[test]
 fn toggle_limbo_window_shows_and_hides() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -1014,7 +1019,7 @@ fn toggle_limbo_window_shows_and_hides() {
 
 #[test]
 fn hints_label_limbo_windows_last() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let output = f.niri_output(1);
@@ -1062,7 +1067,7 @@ fn hints_label_limbo_windows_last() {
 
 #[test]
 fn drawer_closes_window() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -1084,7 +1089,7 @@ fn drawer_closes_window() {
 
 #[test]
 fn drawer_cycles_only_when_cards_overflow() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let output = f.niri_output(1);
@@ -1129,7 +1134,7 @@ fn three_in_limbo(f: &mut Fixture, id: ClientId) -> Vec<crate::window::mapped::M
 
 #[test]
 fn dragging_a_card_along_the_drawer_rearranges() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let order = three_in_limbo(&mut f, id);
@@ -1151,7 +1156,7 @@ fn dragging_a_card_along_the_drawer_rearranges() {
 
 #[test]
 fn dragging_a_card_into_the_screen_pulls_it_out() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let order = three_in_limbo(&mut f, id);
@@ -1167,7 +1172,7 @@ fn dragging_a_card_into_the_screen_pulls_it_out() {
 
 #[test]
 fn clicking_a_card_brings_it_out() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let order = three_in_limbo(&mut f, id);
@@ -1188,7 +1193,7 @@ fn clicking_a_card_brings_it_out() {
 fn pushing_against_the_edge_slides_all_cards_out() {
     use crate::ui::drawer::{edge_pointer, EdgePointer};
 
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
     let output = f.niri_output(1);
@@ -1225,7 +1230,7 @@ fn pushing_against_the_edge_slides_all_cards_out() {
 
 #[test]
 fn limbo_window_closes_cleanly() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -1252,7 +1257,7 @@ fn limbo_window_closes_cleanly() {
 
 #[test]
 fn limbo_windows_listed_without_workspace() {
-    let mut f = Fixture::with_config(i3_config());
+    let mut f = Fixture::with_config(limbo_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
 
@@ -1271,7 +1276,7 @@ fn limbo_windows_listed_without_workspace() {
 
 #[test]
 fn drawer_on_left_edge() {
-    let config = r#"layout { layout-mode "i3"; }; limbo { edge "left"; }"#;
+    let config = r#"layout { layout-mode "i3"; }; limbo { on; edge "left"; }"#;
     let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -1294,4 +1299,109 @@ fn drawer_on_left_edge() {
     };
     assert!(hits(5.));
     assert!(!hits(1915.));
+}
+
+fn strip_ids(f: &mut Fixture) -> Vec<crate::window::mapped::MappedId> {
+    let output = f.niri_output(1);
+    let niri = f.niri();
+    niri.layout.strip_windows(&output).map(|m| m.id()).collect()
+}
+
+#[test]
+fn poof_sends_window_to_the_strip() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    let _ = f.client(id).window(&first).format_recent_configures();
+
+    poof(&mut f, 1000);
+    f.double_roundtrip(id);
+    assert_eq!(strip_ids(&mut f), [ids[1]]);
+    assert!(f.niri().layout.limbo_windows().next().is_none());
+    // The window stays on its workspace.
+    let ws = f.niri().layout.active_workspace().unwrap();
+    assert!(ws.strip_windows().any(|m| m.id() == ids[1]));
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+    // The drawer shows the strip.
+    assert_eq!(drawer_ids(&mut f), [ids[1]]);
+
+    // The first window takes the room, minus the strip.
+    assert_snapshot!(
+        f.client(id).window(&first).format_recent_configures(),
+        @"size: 1672 × 1048, bounds: 1672 × 1048, states: [Activated]"
+    );
+
+    // Move-left right after undoes it.
+    move_left_at(&mut f, 1400);
+    assert!(strip_ids(&mut f).is_empty());
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+}
+
+#[test]
+fn clicking_a_strip_card_swaps_it_in() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+
+    f.niri_state().click_drawer_card(ids[1], &output);
+    f.double_roundtrip(id);
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+    assert_eq!(strip_ids(&mut f), [ids[0]]);
+}
+
+#[test]
+fn the_only_window_stays_out_of_the_strip() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+    assert!(strip_ids(&mut f).is_empty());
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+}
+
+#[test]
+fn limbo_actions_use_the_strip_with_limbo_off() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert_eq!(strip_ids(&mut f), [ids[1]]);
+    limbo_action(&mut f, id, niri_config::Action::PullFromLimbo);
+    assert!(strip_ids(&mut f).is_empty());
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+}
+
+#[test]
+fn closing_a_strip_window_from_its_card() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+
+    f.niri_state().close_drawer_window(ids[1]);
+    f.double_roundtrip(id);
+    assert!(f.client(id).window(&second).close_requested);
 }

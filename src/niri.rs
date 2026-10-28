@@ -4373,10 +4373,19 @@ impl Niri {
         self.screenshot_ui.advance_animations();
         self.window_mru_ui.advance_animations();
         self.poof.advance_animations(self.clock.now());
-        let limbo: Vec<_> = self.layout.limbo_windows().map(|m| m.id()).collect();
-        self.drawer.sync(&limbo);
-        self.drawer.set_popped(self.ace_hints.is_open());
         let outputs: Vec<_> = self.global_space.outputs().cloned().collect();
+        // The cards show limbo, or with limbo off, the strips of the active workspaces.
+        let cards: Vec<_> = if self.config.borrow().limbo.on {
+            self.layout.limbo_windows().map(|m| m.id()).collect()
+        } else {
+            outputs
+                .iter()
+                .flat_map(|output| self.layout.strip_windows(output))
+                .map(|m| m.id())
+                .collect()
+        };
+        self.drawer.sync(&cards);
+        self.drawer.set_popped(self.ace_hints.is_open());
         self.drawer.advance_animations(self.clock.now(), &outputs);
 
         for state in self.output_state.values_mut() {
@@ -6722,6 +6731,19 @@ impl Niri {
         if !self.layout.is_i3() {
             return Vec::new();
         }
+        // With limbo off, the cards are the strip of the active workspace.
+        if !self.config.borrow().limbo.on {
+            if self.layout.is_overview_open() {
+                return Vec::new();
+            }
+            let Some(mon) = self.layout.monitor_for_output(output) else {
+                return Vec::new();
+            };
+            if mon.render_above_top_layer() {
+                return Vec::new();
+            }
+            return self.layout.strip_windows(output).collect();
+        }
         if self.layout.is_overview_open() {
             return self.layout.limbo_windows().collect();
         }
@@ -6787,10 +6809,20 @@ impl Niri {
             edge
         };
 
+        let strip = (!self.config.borrow().limbo.on)
+            .then(|| self.layout.strip_area(output))
+            .flatten();
+        let edge = if strip.is_some() {
+            LimboEdge::Right
+        } else {
+            edge
+        };
+
         DrawerPlacement {
             edge,
             margin,
             overview,
+            strip,
         }
     }
 

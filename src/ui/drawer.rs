@@ -1,7 +1,10 @@
 //! The limbo drawer: windows in limbo peek out as thin thumbnails at the right edge.
 //!
-//! Hovering one slides it out and shows its title. The slide times itself rather than using an
-//! `Animation`, so it plays even with animations turned off.
+//! Hovering one slides it out and shows its title.
+//!
+//! With limbo off, the same cards show the windows in the strip of the active workspace instead,
+//! always out, in the band the layout leaves free for them. The slide times itself rather than
+//! using an `Animation`, so it plays even with animations turned off.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -65,6 +68,9 @@ pub struct DrawerPlacement {
     /// In the overview: the band below the workspaces where the cards show in a row, in
     /// output-local coordinates.
     pub overview: Option<Rectangle<f64, Logical>>,
+    /// For a workspace strip: the band at the right edge where the cards show in a column, in
+    /// output-local coordinates.
+    pub strip: Option<Rectangle<f64, Logical>>,
 }
 
 #[derive(Debug, Default)]
@@ -254,6 +260,9 @@ impl Drawer {
         if let Some(band) = placement.overview {
             return overview_slots(band, items, self.offset, self.dragging_on(output));
         }
+        if let Some(band) = placement.strip {
+            return strip_slots(band, items, self.offset, self.dragging_on(output));
+        }
         slots(
             output_size,
             items,
@@ -358,8 +367,9 @@ impl Drawer {
         let items: Vec<_> = windows.iter().map(|mapped| Item::new(mapped)).collect();
         let slots = self.slots(output, output_size, &items, placement);
 
-        // In the overview, the cards fade in with it and don't slide.
-        let in_overview = placement.overview.is_some();
+        // In the overview, the cards fade in with it and don't slide, and in a strip they're
+        // always out.
+        let in_overview = placement.overview.is_some() || placement.strip.is_some();
         let opacity = if in_overview { alpha } else { OPACITY * alpha };
 
         // The title of the hovered card, on top of everything.
@@ -551,6 +561,86 @@ fn overview_slots(
         .collect()
 }
 
+/// Where the cards go in a workspace strip: in a column from the top of the band, newest first,
+/// as wide as the band allows.
+fn strip_slots(
+    band: Rectangle<f64, Logical>,
+    items: &[Item],
+    offset: usize,
+    drag: Option<(MappedId, f64)>,
+) -> Vec<Slot> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+
+    let w = (band.size.w - 2. * GAP).max(1.);
+    let room = (band.size.h - 2. * GAP).max(1.);
+    // Each card is as wide as the band, at most as high as wide.
+    let full_h = |item: &Item| (w * item.size.h / item.size.w).clamp(1., w);
+    let total = |items: &[&Item], scale: f64| -> f64 {
+        items.iter().map(|item| full_h(item) * scale).sum::<f64>() + GAP * (items.len() as f64 - 1.)
+    };
+
+    // Shrink the cards if they don't all fit, and past the smallest size, show as many as fit
+    // starting at the offset, like the drawer does.
+    let mut shown_items: Vec<&Item> = items.iter().collect();
+    let mut scale = 1.;
+    let full = total(&shown_items, 1.);
+    if full > room {
+        let gaps = GAP * (items.len() as f64 - 1.);
+        scale = ((room - gaps) / (full - gaps)).max(0.);
+        let smallest = items.iter().map(full_h).fold(f64::MAX, f64::min);
+        if smallest * scale < MIN_CARD_H {
+            scale = (MIN_CARD_H / smallest).min(1.);
+            let n = items.len();
+            shown_items.clear();
+            let mut used = 0.;
+            for i in 0..n {
+                let item = &items[(offset + i) % n];
+                let len = full_h(item) * scale;
+                let next = if shown_items.is_empty() {
+                    len
+                } else {
+                    used + GAP + len
+                };
+                if !shown_items.is_empty() && next > room {
+                    break;
+                }
+                used = next;
+                shown_items.push(item);
+            }
+        }
+    }
+
+    let mut next = band.loc.y + GAP;
+    shown_items
+        .into_iter()
+        .map(|item| {
+            let id = item.id;
+            let h = full_h(item) * scale;
+            let size = Size::from(((h * item.size.w / item.size.h).min(w), h));
+            let x = band.loc.x + (band.size.w - size.w) / 2.;
+
+            // A dragged card follows the pointer, leaving its place in the order empty.
+            let y = match drag {
+                Some((dragged, at)) if dragged == id => at.clamp(
+                    band.loc.y,
+                    (band.loc.y + band.size.h - size.h).max(band.loc.y),
+                ),
+                _ => next,
+            };
+
+            let card = Rectangle::new(Point::from((x, y)), size);
+            next += size.h + GAP;
+            Slot {
+                id,
+                card,
+                hit: card,
+            }
+        })
+        .collect()
+}
+
 fn slots(
     output_size: Size<f64, Logical>,
     items: &[Item],
@@ -690,6 +780,7 @@ mod tests {
             edge,
             margin: MARGIN,
             overview: None,
+            strip: None,
         }
     }
 

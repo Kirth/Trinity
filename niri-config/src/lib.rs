@@ -798,6 +798,8 @@ mod tests {
     #[test]
     fn parse_limbo() {
         assert_eq!(do_parse("").limbo.edge, LimboEdge::Right);
+        assert!(!do_parse("").limbo.on);
+        assert!(do_parse("limbo { on; }").limbo.on);
         assert_eq!(
             do_parse(r#"limbo { edge "bottom"; }"#).limbo.edge,
             LimboEdge::Bottom

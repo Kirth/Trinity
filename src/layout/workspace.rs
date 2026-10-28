@@ -2633,6 +2633,19 @@ impl<W: LayoutElement> Workspace<W> {
         area
     }
 
+    /// Where the strip shows, in workspace coordinates, while it has windows.
+    pub fn strip_area(&self) -> Option<Rectangle<f64, Logical>> {
+        if self.strip.is_empty() {
+            return None;
+        }
+        let area = self.working_area;
+        let w = STRIP_WIDTH.min(area.size.w);
+        Some(Rectangle::new(
+            Point::from((area.loc.x + area.size.w - w, area.loc.y)),
+            Size::from((w, area.size.h)),
+        ))
+    }
+
     /// Hands the tiling layout its area again, after the strip filled up or emptied.
     fn update_tiling_area(&mut self) {
         let tiling_area = self.tiling_area();

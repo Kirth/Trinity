@@ -124,7 +124,7 @@ impl DrawerGrab {
             along - self.grab_offset,
         )));
         if let Some(insert) = insertion_point(&slots, edge, self.id, along) {
-            reorder(data, self.id, insert);
+            reorder(data, self.id, insert, &self.output);
         }
         data.niri.queue_redraw_all();
         None
@@ -136,10 +136,9 @@ impl DrawerGrab {
             .cursor_manager
             .set_cursor_image(CursorImageStatus::default_named());
 
-        // Let go without moving: a click brings the window next to the focused one, leaving the
-        // overview.
+        // Let go without moving: a click brings the window out, leaving the overview.
         if self.phase == Phase::Pending {
-            data.pull_from_drawer(self.id, &self.output);
+            data.click_drawer_card(self.id, &self.output);
             if data.niri.layout.is_overview_open() {
                 data.niri.layout.close_overview();
             }
@@ -149,26 +148,35 @@ impl DrawerGrab {
     }
 }
 
-/// Moves a window in limbo next to another, as the drawer shows it.
-fn reorder(data: &mut State, id: MappedId, insert: Insert) {
+/// Moves a window in limbo or a strip next to another, as the drawer shows it.
+fn reorder(data: &mut State, id: MappedId, insert: Insert, output: &Output) {
     let layout = &mut data.niri.layout;
-    let others: Vec<_> = layout
-        .limbo_windows()
-        .map(|mapped| mapped.id())
-        .filter(|x| *x != id)
-        .collect();
+    let in_limbo = layout.limbo_windows().any(|mapped| mapped.id() == id);
+    let order: Vec<_> = if in_limbo {
+        layout.limbo_windows().map(|mapped| mapped.id()).collect()
+    } else {
+        layout
+            .strip_windows(output)
+            .map(|mapped| mapped.id())
+            .collect()
+    };
+    let others: Vec<_> = order.iter().copied().filter(|x| *x != id).collect();
     let idx = match insert {
         Insert::Before(other) => others.iter().position(|x| *x == other),
         Insert::After(other) => others.iter().position(|x| *x == other).map(|i| i + 1),
     };
     let window = layout
-        .limbo_windows()
-        .find(|mapped| mapped.id() == id)
-        .map(|mapped| mapped.window.clone());
+        .windows()
+        .find(|(_, mapped)| mapped.id() == id)
+        .map(|(_, mapped)| mapped.window.clone());
     if let (Some(idx), Some(window)) = (idx, window) {
-        let current = layout.limbo_windows().position(|mapped| mapped.id() == id);
+        let current = order.iter().position(|x| *x == id);
         if current != Some(idx) {
-            layout.move_in_limbo(&window, idx);
+            if in_limbo {
+                layout.move_in_limbo(&window, idx);
+            } else {
+                layout.move_in_strip(&window, idx);
+            }
         }
     }
 }

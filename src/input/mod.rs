@@ -763,7 +763,11 @@ impl State {
                 .start_fly_off_animation_for_window(renderer, window);
         });
 
-        let moved = self.niri.layout.move_to_limbo(window);
+        let moved = if self.niri.config.borrow().limbo.on {
+            self.niri.layout.move_to_limbo(window)
+        } else {
+            self.niri.layout.stash_window(window)
+        };
         if !moved {
             self.niri.layout.cancel_fly_offs();
         }
@@ -805,9 +809,18 @@ impl State {
                 .start_fly_off_animation_for_window(renderer, window);
         });
 
-        if !self.niri.layout.interactive_move_end_to_limbo(window) {
-            self.niri.layout.cancel_fly_offs();
-            return false;
+        if self.niri.config.borrow().limbo.on {
+            if !self.niri.layout.interactive_move_end_to_limbo(window) {
+                self.niri.layout.cancel_fly_offs();
+                return false;
+            }
+        } else {
+            // Drop the window, then set it aside in the strip of the workspace it landed on.
+            self.niri.layout.interactive_move_end(window);
+            if !self.niri.layout.stash_window(window) {
+                self.niri.layout.cancel_fly_offs();
+                return true;
+            }
         }
         self.niri.layout.clean_up_i3_workspaces();
 
@@ -837,7 +850,8 @@ impl State {
 
         // Pushing against the edge beside the cards slides them all out, except in the overview
         // where they're all out already.
-        if self.niri.layout.is_overview_open() {
+        // A strip is always out, too.
+        if self.niri.layout.is_overview_open() || !self.niri.config.borrow().limbo.on {
             if self.niri.drawer.clear_edge_pointer() {
                 self.niri.queue_redraw_all();
             }
@@ -916,13 +930,44 @@ impl State {
         Some(window)
     }
 
-    /// Asks the window of a card in the limbo drawer to close.
-    pub(crate) fn close_drawer_window(&mut self, id: crate::window::mapped::MappedId) {
-        let mapped = self
+    /// Handles a click on a card: a strip window swaps with the focused window, or with Shift
+    /// goes next to it, and a window in limbo comes out next to the focused window.
+    pub(crate) fn click_drawer_card(
+        &mut self,
+        id: crate::window::mapped::MappedId,
+        output: &Output,
+    ) {
+        let window = self
             .niri
             .layout
-            .limbo_windows()
-            .find(|mapped| mapped.id() == id);
+            .windows()
+            .find(|(_, mapped)| mapped.id() == id)
+            .map(|(_, mapped)| mapped.window.clone());
+        let Some(window) = window else {
+            return;
+        };
+        let shift = self
+            .niri
+            .seat
+            .get_keyboard()
+            .unwrap()
+            .modifier_state()
+            .shift;
+        if self.niri.layout.is_in_strip(&window) && !shift {
+            self.niri.layout.activate_window(&window);
+            self.niri.queue_redraw_all();
+        } else {
+            self.pull_from_drawer(id, output);
+        }
+    }
+
+    /// Asks the window of a card in the limbo drawer or a strip to close.
+    pub(crate) fn close_drawer_window(&mut self, id: crate::window::mapped::MappedId) {
+        let layout = &self.niri.layout;
+        let mapped = layout
+            .windows()
+            .map(|(_, mapped)| mapped)
+            .find(|mapped| mapped.id() == id && layout.is_set_aside(&mapped.window));
         if let Some(mapped) = mapped {
             mapped.toplevel().send_close();
         }
@@ -965,7 +1010,7 @@ impl State {
         let Some(window) = window else {
             return;
         };
-        if !self.niri.layout.is_i3() || self.niri.layout.is_in_limbo(&window) {
+        if !self.niri.layout.is_i3() || self.niri.layout.is_set_aside(&window) {
             return;
         }
         self.poof_to_limbo(&window);
@@ -979,18 +1024,22 @@ impl State {
         if !self.niri.layout.is_i3() {
             return;
         }
+        let Some(output) = self.niri.layout.active_output().cloned() else {
+            return;
+        };
         let id = {
-            let mut limbo = self.niri.layout.limbo_windows();
+            let layout = &self.niri.layout;
             let mapped = match window {
-                Some(window) => limbo.find(|mapped| mapped.window == window),
-                None => limbo.next(),
+                Some(window) => layout
+                    .windows()
+                    .map(|(_, mapped)| mapped)
+                    .find(|mapped| mapped.window == window && layout.is_set_aside(&window)),
+                None if self.niri.config.borrow().limbo.on => layout.limbo_windows().next(),
+                None => layout.strip_windows(&output).next(),
             };
             mapped.map(|mapped| mapped.id())
         };
         let Some(id) = id else {
-            return;
-        };
-        let Some(output) = self.niri.layout.active_output().cloned() else {
             return;
         };
         if self.pull_from_drawer(id, &output).is_some() {
@@ -1047,7 +1096,7 @@ impl State {
         if self.niri.layout.active_workspace().map(|ws| ws.id()) != Some(undo.workspace) {
             return false;
         }
-        if !self.niri.layout.is_in_limbo(&undo.window) {
+        if !self.niri.layout.is_set_aside(&undo.window) {
             return false;
         }
 
@@ -2155,7 +2204,7 @@ impl State {
             }
             Action::ToggleLimboWindowById(id) => {
                 if let Some(window) = self.window_by_id(id) {
-                    if self.niri.layout.is_in_limbo(&window) {
+                    if self.niri.layout.is_set_aside(&window) {
                         self.pull_from_limbo(Some(window));
                     } else {
                         self.move_window_to_limbo(Some(window));
