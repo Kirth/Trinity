@@ -1047,6 +1047,26 @@ impl State {
         }
     }
 
+    /// Swaps a window in the strip of the active workspace with the focused window, picking it
+    /// by its index from the number of windows in the strip.
+    fn swap_with_strip(&mut self, pick: impl FnOnce(usize) -> Option<usize>) {
+        let Some(output) = self.niri.layout.active_output().cloned() else {
+            return;
+        };
+        let strip: Vec<_> = self
+            .niri
+            .layout
+            .strip_windows(&output)
+            .map(|mapped| mapped.window.clone())
+            .collect();
+        let Some(window) = pick(strip.len()).and_then(|idx| strip.get(idx)) else {
+            return;
+        };
+        self.niri.layout.activate_window(window);
+        self.niri.queue_redraw_all();
+        self.maybe_warp_cursor_to_focus();
+    }
+
     /// The window with this id, in limbo or not.
     fn window_by_id(&self, id: u64) -> Option<smithay::desktop::Window> {
         self.niri
@@ -2191,6 +2211,12 @@ impl State {
             }
             Action::PullFromLimbo => {
                 self.pull_from_limbo(None);
+            }
+            Action::SwapWithStrip(index) => {
+                self.swap_with_strip(|len| index.checked_sub(1).filter(|i| *i < len));
+            }
+            Action::CycleStrip => {
+                self.swap_with_strip(|len| len.checked_sub(1));
             }
             Action::ToggleLimboWindow => {
                 // Like i3's scratchpad show: hide the window last brought out of limbo if it's

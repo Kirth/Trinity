@@ -487,6 +487,18 @@ pub enum Action {
     },
     /// Bring the newest window in limbo back next to the focused window (i3 layout mode).
     PullFromLimbo {},
+    /// Swap a window in the strip of the focused workspace with the focused window (i3 layout
+    /// mode).
+    SwapWithStrip {
+        /// Index of the window in the strip.
+        ///
+        /// The index starts from 1 for the newest window, at the top.
+        #[cfg_attr(feature = "clap", arg())]
+        index: usize,
+    },
+    /// Swap the oldest window in the strip of the focused workspace with the focused window,
+    /// cycling through all of them when repeated (i3 layout mode).
+    CycleStrip {},
     /// Show or hide a window from limbo, like i3's scratchpad (i3 layout mode).
     ///
     /// Without an id, sends the focused window back to limbo if it was the last one brought out

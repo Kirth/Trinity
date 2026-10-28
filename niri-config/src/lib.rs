@@ -755,6 +755,8 @@ mod tests {
                 Mod+Shift+Minus { move-window-to-limbo; }
                 Mod+Ctrl+Minus { pull-from-limbo; }
                 Mod+Minus { toggle-limbo-window; }
+                Mod+Alt+1 { swap-with-strip 1; }
+                Mod+Tab { cycle-strip; }
             }
             "#,
         );
@@ -764,7 +766,9 @@ mod tests {
             [
                 &Action::MoveWindowToLimbo,
                 &Action::PullFromLimbo,
-                &Action::ToggleLimboWindow
+                &Action::ToggleLimboWindow,
+                &Action::SwapWithStrip(1),
+                &Action::CycleStrip,
             ]
         );
     }

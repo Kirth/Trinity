@@ -1405,3 +1405,40 @@ fn closing_a_strip_window_from_its_card() {
     f.double_roundtrip(id);
     assert!(f.client(id).window(&second).close_requested);
 }
+
+#[test]
+fn strip_actions_swap_windows_in() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    for _ in 0..3 {
+        open_window(&mut f, id);
+    }
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    // Set aside 3, then 2, so the strip is [2, 3] and 1 is focused.
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert_eq!(strip_ids(&mut f), [ids[1], ids[2]]);
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+
+    // The newest goes back and forth.
+    limbo_action(&mut f, id, niri_config::Action::SwapWithStrip(1));
+    assert_eq!(focused_id(&mut f), Some(ids[1]));
+    limbo_action(&mut f, id, niri_config::Action::SwapWithStrip(1));
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+    // Out of range does nothing.
+    limbo_action(&mut f, id, niri_config::Action::SwapWithStrip(5));
+    assert_eq!(focused_id(&mut f), Some(ids[0]));
+
+    // Cycling walks through all of them.
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        limbo_action(&mut f, id, niri_config::Action::CycleStrip);
+        seen.push(focused_id(&mut f).unwrap());
+    }
+    seen.sort_by_key(|id| id.get());
+    let mut all = ids.clone();
+    all.sort_by_key(|id| id.get());
+    assert_eq!(seen, all);
+}

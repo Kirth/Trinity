@@ -223,6 +223,8 @@ pub enum Action {
     #[knuffel(skip)]
     MoveWindowToLimboById(u64),
     PullFromLimbo,
+    SwapWithStrip(#[knuffel(argument)] usize),
+    CycleStrip,
     ToggleLimboWindow,
     #[knuffel(skip)]
     ToggleLimboWindowById(u64),
@@ -537,6 +539,8 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::MoveWindowToLimbo { id: None } => Self::MoveWindowToLimbo,
             niri_ipc::Action::MoveWindowToLimbo { id: Some(id) } => Self::MoveWindowToLimboById(id),
             niri_ipc::Action::PullFromLimbo {} => Self::PullFromLimbo,
+            niri_ipc::Action::SwapWithStrip { index } => Self::SwapWithStrip(index),
+            niri_ipc::Action::CycleStrip {} => Self::CycleStrip,
             niri_ipc::Action::ToggleLimboWindow { id: None } => Self::ToggleLimboWindow,
             niri_ipc::Action::ToggleLimboWindow { id: Some(id) } => Self::ToggleLimboWindowById(id),
             niri_ipc::Action::CenterColumn {} => Self::CenterColumn,
