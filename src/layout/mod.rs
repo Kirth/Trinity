@@ -5779,6 +5779,13 @@ impl<W: LayoutElement> Layout<W> {
             .flat_map(|ws| ws.strip_windows())
     }
 
+    pub fn strip_windows_mut(&mut self, output: &Output) -> impl Iterator<Item = &mut W> + '_ {
+        self.monitor_for_output_mut(output)
+            .map(|mon| mon.active_workspace())
+            .into_iter()
+            .flat_map(|ws| ws.strip_tiles_mut().map(Tile::window_mut))
+    }
+
     /// Where the strip of the active workspace on this output shows, in output-local
     /// coordinates, while it has windows.
     pub fn strip_area(&self, output: &Output) -> Option<Rectangle<f64, Logical>> {

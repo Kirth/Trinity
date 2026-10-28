@@ -204,6 +204,11 @@ const CLEAR_COLOR_LOCKED: [f32; 4] = [0.3, 0.1, 0.1, 1.];
 // should be ~1.995 seconds.
 const FRAME_CALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(995));
 
+// Windows in a visible workspace strip show as small live thumbnails, which don't need to update
+// every frame: they get a frame callback with the output's frames, but at most about twice a
+// second.
+const STRIP_FRAME_CALLBACK_THROTTLE: Option<Duration> = Some(Duration::from_millis(495));
+
 pub struct Niri {
     pub config: Rc<RefCell<Config>>,
 
@@ -5467,6 +5472,15 @@ impl Niri {
                 frame_callback_time,
                 FRAME_CALLBACK_THROTTLE,
                 should_send,
+            );
+        }
+
+        for mapped in self.layout.strip_windows_mut(output) {
+            mapped.send_frame(
+                output,
+                frame_callback_time,
+                STRIP_FRAME_CALLBACK_THROTTLE,
+                |_, _| None,
             );
         }
 
