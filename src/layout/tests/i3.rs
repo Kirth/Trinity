@@ -5,6 +5,7 @@ use smithay::utils::{Logical, Point, Size};
 
 use super::*;
 use crate::layout::tiling::{ContainerLayout, LayoutCommand, SplitCommand};
+use crate::layout::workspace::STRIP_WIDTH;
 
 fn i3_options() -> Options {
     Options {
@@ -808,4 +809,188 @@ fn overview_grid_has_no_limbo_band_without_limbo() {
     ops.extend([Op::ToggleOverview, Op::CompleteAnimations]);
     let layout = check_ops_with_options(i3_options(), ops);
     assert!(monitors(&layout)[0].overview_limbo_band().is_none());
+}
+
+/// Right edge of the rightmost window on the active workspace.
+fn right_edge(layout: &Layout<TestWindow>) -> f64 {
+    layout
+        .active_workspace()
+        .unwrap()
+        .tiles_with_render_positions()
+        .map(|(tile, pos, _)| pos.x + tile.tile_expected_or_current_size().w)
+        .fold(f64::MIN, f64::max)
+}
+
+fn strip(layout: &Layout<TestWindow>) -> Vec<usize> {
+    let ws = layout.active_workspace().unwrap();
+    ws.strip_windows().map(|win| *win.id()).collect()
+}
+
+#[test]
+fn stashing_makes_room_for_the_strip() {
+    let before = right_edge(&tiling_layout([
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ]));
+    let layout = tiling_layout([add_window(1), add_window(2), add_window(3), Op::Stash(3)]);
+    assert_eq!(strip(&layout), [3]);
+    assert!(!positions(&layout).contains_key(&3));
+    assert!(right_edge(&layout) <= before - STRIP_WIDTH + 1.);
+
+    // Without windows in the strip, the layout gets the room back.
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        add_window(3),
+        Op::Stash(3),
+        Op::Unstash {
+            id: 3,
+            to_place: true,
+        },
+    ]);
+    assert!(strip(&layout).is_empty());
+    assert_eq!(right_edge(&layout), before);
+}
+
+#[test]
+fn last_window_stays_out_of_the_strip() {
+    let layout = tiling_layout([add_window(1), add_window(2), Op::Stash(1), Op::Stash(2)]);
+    assert_eq!(strip(&layout), [1]);
+    assert_eq!(focused(&layout), 2);
+}
+
+#[test]
+fn unstash_puts_window_back_in_place() {
+    let ops = [
+        add_window(1),
+        add_window(2),
+        Op::Split(SplitCommand::Vertical),
+        add_window(3),
+    ];
+    let before = positions(&tiling_layout(ops.clone()));
+    let mut all = ops.to_vec();
+    all.extend([
+        Op::Stash(2),
+        Op::Unstash {
+            id: 2,
+            to_place: true,
+        },
+    ]);
+    let after = positions(&tiling_layout(all));
+    assert_eq!(before, after);
+}
+
+#[test]
+fn swap_takes_the_focused_windows_place() {
+    let ops = [
+        add_window(1),
+        add_window(2),
+        add_window(3),
+        Op::Stash(3),
+        Op::FocusWindow(2),
+    ];
+    let before = positions(&tiling_layout(ops.clone()));
+    let mut all = ops.to_vec();
+    // Swapping 3 back in puts it where the focused 2 was.
+    all.push(Op::SwapWithStrip(3));
+    let layout = tiling_layout(all);
+    assert_eq!(strip(&layout), [2]);
+    assert_eq!(focused(&layout), 3);
+    let after = positions(&layout);
+    assert_eq!(after[&3].0.x, before[&2].0.x);
+}
+
+#[test]
+fn activating_a_strip_window_swaps_it_in() {
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        Op::Stash(1),
+        Op::FocusWindow(1),
+    ]);
+    assert_eq!(strip(&layout), [2]);
+    assert_eq!(focused(&layout), 1);
+}
+
+#[test]
+fn closing_the_last_laid_out_window_brings_back_the_strip() {
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        add_window(3),
+        Op::Stash(1),
+        Op::Stash(2),
+        Op::CloseWindow(3),
+    ]);
+    assert_eq!(strip(&layout), [1]);
+    assert_eq!(focused(&layout), 2);
+}
+
+#[test]
+fn strip_is_per_workspace() {
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        Op::Stash(1),
+        REFRESH,
+        Op::FocusI3Workspace(2),
+        add_window(3),
+    ]);
+    assert!(strip(&layout).is_empty());
+    assert!(layout.is_in_strip(&1));
+}
+
+#[test]
+fn closing_a_strip_window_removes_it() {
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        Op::Stash(1),
+        Op::CloseWindow(1),
+    ]);
+    assert!(strip(&layout).is_empty());
+    assert!(!layout.has_window(&1));
+}
+
+fn strip_op() -> impl Strategy<Value = Op> {
+    let id = 1..=5usize;
+    prop_oneof![
+        3 => id.clone().prop_map(add_window),
+        1 => id.clone().prop_map(Op::CloseWindow),
+        3 => id.clone().prop_map(Op::Stash),
+        1 => (id.clone(), any::<bool>()).prop_map(|(id, to_place)| Op::Unstash { id, to_place }),
+        2 => id.clone().prop_map(Op::SwapWithStrip),
+        1 => (id.clone(), 0..=5usize).prop_map(|(id, idx)| Op::MoveInStrip { id, idx }),
+        2 => id.clone().prop_map(Op::FocusWindow),
+        1 => id.clone().prop_map(Op::FullscreenWindow),
+        1 => id.clone().prop_map(|id| Op::MaximizeWindowToEdges { id: Some(id) }),
+        1 => id.clone().prop_map(|id| Op::ToggleWindowFloating { id: Some(id) }),
+        1 => (proptest::option::of(id.clone()), 0..=4usize).prop_map(|(window_id, workspace_idx)| {
+            Op::MoveWindowToWorkspace {
+                window_id,
+                workspace_idx,
+            }
+        }),
+        1 => (1..=4u8).prop_map(Op::FocusI3Workspace),
+        1 => Just(Op::Split(SplitCommand::Vertical)),
+        1 => Just(Op::CloseWindow(1)),
+        1 => Just(REFRESH),
+        1 => (1..=2usize).prop_map(Op::AddOutput),
+        1 => (1..=2usize).prop_map(Op::RemoveOutput),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: std::env::var("STRIP_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(64),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn random_strip_operations_dont_panic(ops in proptest::collection::vec(strip_op(), 1..40)) {
+        let mut all = vec![Op::AddOutput(1)];
+        all.extend(ops);
+        check_ops_with_options(i3_options(), all);
+    }
 }

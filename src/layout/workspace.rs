@@ -126,8 +126,25 @@ pub struct Workspace<W: LayoutElement> {
     /// Layout config overrides for this workspace.
     layout_config: Option<niri_config::LayoutPart>,
 
+    /// Windows set aside in the strip at the right edge, newest first.
+    ///
+    /// They stay on this workspace and its output, but out of the layout, which shrinks to make
+    /// room for them while there are any.
+    strip: Vec<StripEntry<W>>,
+
     /// Unique ID of this workspace.
     id: WorkspaceId,
+}
+
+/// Width of the strip at the right edge of a workspace, in logical pixels.
+pub const STRIP_WIDTH: f64 = 216.;
+
+/// A window set aside in a workspace's strip.
+#[derive(Debug)]
+struct StripEntry<W: LayoutElement> {
+    removed: RemovedTile<W>,
+    /// Where the window was in the tree, to put it back there.
+    place: Option<TilingPlace>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +321,7 @@ impl<W: LayoutElement> Workspace<W> {
             name: config.map(|c| c.name.0),
             number: None,
             layout_config,
+            strip: Vec::new(),
             id: WorkspaceId::next(),
         }
     }
@@ -378,6 +396,7 @@ impl<W: LayoutElement> Workspace<W> {
             name: config.map(|c| c.name.0),
             number: None,
             layout_config,
+            strip: Vec::new(),
             id: WorkspaceId::next(),
         }
     }
@@ -487,13 +506,20 @@ impl<W: LayoutElement> Workspace<W> {
             options.clone(),
         );
 
+        let tiling_area = self.tiling_area();
         if let Some(tiling) = &mut self.tiling {
             tiling.update_config(
                 self.view_size,
-                self.working_area,
+                tiling_area,
                 self.scale.fractional_scale(),
                 options.clone(),
             );
+        }
+        for entry in &mut self.strip {
+            entry
+                .removed
+                .tile
+                .update_config(self.view_size, scale, options.clone());
         }
 
         let shadow_config =
@@ -532,7 +558,7 @@ impl<W: LayoutElement> Workspace<W> {
 
             let mut tiling = TilingSpace::new(
                 self.view_size,
-                self.working_area,
+                self.tiling_area(),
                 self.scale.fractional_scale(),
                 self.clock.clone(),
                 self.options.clone(),
@@ -622,6 +648,9 @@ impl<W: LayoutElement> Workspace<W> {
         }
         self.floating.update_shaders();
         self.shadow.update_shaders();
+        for entry in &mut self.strip {
+            entry.removed.tile.update_shaders();
+        }
     }
 
     pub fn windows(&self) -> impl Iterator<Item = &W> + '_ {
@@ -694,7 +723,7 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if let Some(output) = self.output.take() {
-            for win in self.windows() {
+            for win in self.windows().chain(self.strip_windows()) {
                 win.output_leave(&output);
             }
         }
@@ -711,7 +740,7 @@ impl<W: LayoutElement> Workspace<W> {
 
             self.update_output_size();
 
-            for win in self.windows() {
+            for win in self.windows().chain(self.strip_windows()) {
                 self.enter_output_for_window(win);
             }
         }
@@ -786,13 +815,18 @@ impl<W: LayoutElement> Workspace<W> {
                 scale.fractional_scale(),
                 self.options.clone(),
             );
+            let tiling_area = self.tiling_area();
             if let Some(tiling) = &mut self.tiling {
                 tiling.update_config(
                     size,
-                    working_area,
+                    tiling_area,
                     scale.fractional_scale(),
                     self.options.clone(),
                 );
+            }
+            for entry in &mut self.strip {
+                let tile = &mut entry.removed.tile;
+                tile.update_config(size, scale.fractional_scale(), self.options.clone());
             }
 
             let shadow_config =
@@ -803,7 +837,7 @@ impl<W: LayoutElement> Workspace<W> {
         self.background_buffer.resize(size);
 
         if scale_transform_changed {
-            for window in self.windows() {
+            for window in self.windows().chain(self.strip_windows()) {
                 window.set_preferred_scale_transform(self.scale, self.transform);
             }
         }
@@ -1014,6 +1048,14 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         self.update_focus_floating_tiling_after_removing(from_floating);
+
+        // Never leave only the strip: bring back its newest window.
+        if self.windows().next().is_none() {
+            let newest = self.strip_windows().next().map(|win| win.id().clone());
+            if let Some(id) = newest {
+                self.unstash(&id, true);
+            }
+        }
 
         removed
     }
@@ -2128,7 +2170,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn has_windows(&self) -> bool {
-        self.windows().next().is_some()
+        self.windows().next().is_some() || !self.strip.is_empty()
     }
 
     pub fn has_window(&self, window: &W::Id) -> bool {
@@ -2136,11 +2178,21 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn find_wl_surface(&self, wl_surface: &WlSurface) -> Option<&W> {
-        self.windows().find(|win| win.is_wl_surface(wl_surface))
+        self.windows()
+            .chain(self.strip_windows())
+            .find(|win| win.is_wl_surface(wl_surface))
     }
 
     pub fn find_wl_surface_mut(&mut self, wl_surface: &WlSurface) -> Option<&mut W> {
-        self.windows_mut().find(|win| win.is_wl_surface(wl_surface))
+        let strip = self.strip.iter_mut().map(|e| e.removed.tile.window_mut());
+        let laid_out = self.scrolling.tiles_mut().map(Tile::window_mut);
+        let tiling = self.tiling.iter_mut().flat_map(|t| t.tiles_mut());
+        let floating = self.floating.tiles_mut().map(Tile::window_mut);
+        laid_out
+            .chain(tiling.map(Tile::window_mut))
+            .chain(floating)
+            .chain(strip)
+            .find(|win| win.is_wl_surface(wl_surface))
     }
 
     pub fn tiles_with_render_positions(
@@ -2176,7 +2228,10 @@ impl<W: LayoutElement> Workspace<W> {
         let scrolling = self.scrolling.tiles_with_ipc_layouts();
         let tiling = self.tiling.iter().flat_map(|t| t.tiles_with_ipc_layouts());
         let floating = self.floating.tiles_with_ipc_layouts();
-        floating.chain(tiling).chain(scrolling)
+        let strip = self
+            .strip_tiles()
+            .map(|tile| (tile, tile.ipc_layout_template()));
+        floating.chain(tiling).chain(scrolling).chain(strip)
     }
 
     pub fn active_window_visual_rectangle(&self) -> Option<Rectangle<f64, Logical>> {
@@ -2466,6 +2521,15 @@ impl<W: LayoutElement> Workspace<W> {
         }
         self.floating
             .refresh(is_active && self.floating_is_active.get(), is_focused);
+
+        // Windows in the strip are never active, but still get their configures.
+        for entry in &mut self.strip {
+            let win = entry.removed.tile.window_mut();
+            win.set_activated(false);
+            win.set_interactive_resize(None);
+            win.send_pending_configure();
+            win.refresh();
+        }
     }
 
     pub fn scroll_amount_to_activate(&self, window: &W::Id) -> f64 {
@@ -2560,6 +2624,171 @@ impl<W: LayoutElement> Workspace<W> {
     ///
     /// Gives the tile back if that isn't possible anymore.
     #[must_use]
+    /// The area for the tiled windows: the working area, minus the strip while it has windows.
+    fn tiling_area(&self) -> Rectangle<f64, Logical> {
+        let mut area = self.working_area;
+        if !self.strip.is_empty() {
+            area.size.w = (area.size.w - STRIP_WIDTH).max(1.);
+        }
+        area
+    }
+
+    /// Hands the tiling layout its area again, after the strip filled up or emptied.
+    fn update_tiling_area(&mut self) {
+        let tiling_area = self.tiling_area();
+        if let Some(tiling) = &mut self.tiling {
+            tiling.update_config(
+                self.view_size,
+                tiling_area,
+                self.scale.fractional_scale(),
+                self.options.clone(),
+            );
+        }
+    }
+
+    /// Windows in the strip, newest first.
+    pub fn strip_tiles(&self) -> impl Iterator<Item = &Tile<W>> + '_ {
+        self.strip.iter().map(|entry| &entry.removed.tile)
+    }
+
+    pub fn strip_tiles_mut(&mut self) -> impl Iterator<Item = &mut Tile<W>> + '_ {
+        self.strip.iter_mut().map(|entry| &mut entry.removed.tile)
+    }
+
+    /// Windows in the strip, newest first.
+    pub fn strip_windows(&self) -> impl Iterator<Item = &W> + '_ {
+        self.strip_tiles().map(Tile::window)
+    }
+
+    pub fn has_strip_window(&self, window: &W::Id) -> bool {
+        self.strip_idx(window).is_some()
+    }
+
+    fn strip_idx(&self, window: &W::Id) -> Option<usize> {
+        self.strip
+            .iter()
+            .position(|entry| entry.removed.tile.window().id() == window)
+    }
+
+    /// Sets a window aside in the strip.
+    ///
+    /// Only in i3 mode, and never the last window outside the strip.
+    pub fn stash(&mut self, window: &W::Id) -> bool {
+        let Some(tiling) = &self.tiling else {
+            return false;
+        };
+        if !self.has_window(window) || self.windows().nth(1).is_none() {
+            return false;
+        }
+
+        let place = tiling.place_of(window);
+        let from_floating = self.floating.has_window(window);
+        let mut removed = if from_floating {
+            self.floating.remove_tile(window)
+        } else {
+            self.tiled_remove_tile(window, Transaction::new())
+        };
+        self.update_focus_floating_tiling_after_removing(from_floating);
+
+        removed.tile.stop_move_animations();
+        self.strip.insert(0, StripEntry { removed, place });
+        self.update_tiling_area();
+        true
+    }
+
+    /// Takes a window out of the strip, back where it was if `to_place` and the tree allows,
+    /// otherwise next to the focused window.
+    pub fn unstash(&mut self, window: &W::Id, to_place: bool) -> bool {
+        let Some(idx) = self.strip_idx(window) else {
+            return false;
+        };
+        let StripEntry { removed, place } = self.strip.remove(idx);
+        self.update_tiling_area();
+        self.add_removed_tile(removed, place.as_ref().filter(|_| to_place));
+        true
+    }
+
+    /// Takes a window out of the strip without putting it on the workspace, as when it closes.
+    pub(super) fn take_from_strip(&mut self, window: &W::Id) -> Option<RemovedTile<W>> {
+        let idx = self.strip_idx(window)?;
+        let entry = self.strip.remove(idx);
+        self.update_tiling_area();
+        Some(entry.removed)
+    }
+
+    /// Swaps a window in the strip with the focused tiled window: it takes that window's place
+    /// in the tree, and that window goes first in the strip.
+    ///
+    /// Without a focused tiled window, takes the window out of the strip next to the focus.
+    pub fn swap_with_focused(&mut self, window: &W::Id) -> bool {
+        let Some(idx) = self.strip_idx(window) else {
+            return false;
+        };
+        let focused = self
+            .tiling
+            .as_ref()
+            .filter(|_| !self.floating_is_active.get())
+            .and_then(|tiling| tiling.active_window())
+            .map(|win| win.id().clone());
+        let Some(focused) = focused else {
+            return self.unstash(window, false);
+        };
+
+        let place = self.tiling.as_ref().unwrap().place_of(&focused);
+        let mut out = self.tiled_remove_tile(&focused, Transaction::new());
+        out.tile.stop_move_animations();
+
+        let StripEntry { removed, .. } = self.strip.remove(idx);
+        self.add_removed_tile(removed, place.as_ref());
+
+        self.strip.insert(
+            0,
+            StripEntry {
+                removed: out,
+                place,
+            },
+        );
+        self.update_tiling_area();
+        true
+    }
+
+    /// Moves a window in the strip to this position, counting from the newest.
+    pub fn move_in_strip(&mut self, window: &W::Id, idx: usize) -> bool {
+        let Some(from) = self.strip_idx(window) else {
+            return false;
+        };
+        let entry = self.strip.remove(from);
+        let idx = idx.min(self.strip.len());
+        self.strip.insert(idx, entry);
+        true
+    }
+
+    /// Puts a removed tile back on this workspace, at a place in the tree if it still fits,
+    /// otherwise next to the focused window, and focuses it.
+    fn add_removed_tile(&mut self, removed: RemovedTile<W>, place: Option<&TilingPlace>) {
+        let RemovedTile {
+            tile,
+            width,
+            is_full_width,
+            is_floating,
+        } = removed;
+        let tile = match place {
+            Some(place) if !is_floating => self.add_tile_at_place(tile, place),
+            _ => Some(tile),
+        };
+        if let Some(tile) = tile {
+            self.add_tile(
+                tile,
+                WorkspaceAddWindowTarget::Auto,
+                ActivateWindow::Yes,
+                width,
+                is_full_width,
+                is_floating,
+                None,
+            );
+        }
+    }
+
     pub(super) fn add_tile_at_place(
         &mut self,
         mut tile: Tile<W>,
@@ -2789,7 +3018,7 @@ impl<W: LayoutElement> Workspace<W> {
                 "in i3 mode, windows must be in the tiling layout"
             );
             assert_eq!(self.view_size, tiling.view_size());
-            assert_eq!(self.working_area, tiling.working_area());
+            assert_eq!(self.tiling_area(), tiling.working_area());
             assert_eq!(&self.clock, tiling.clock());
             assert!(Rc::ptr_eq(&self.options, tiling.options()));
             tiling.verify_invariants();

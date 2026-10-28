@@ -1018,7 +1018,7 @@ impl<W: LayoutElement> Layout<W> {
 
         // A dialog of a window in limbo opens like any new window.
         let target = match target {
-            AddWindowTarget::NextTo(next_to) if self.is_in_limbo(next_to) => AddWindowTarget::Auto,
+            AddWindowTarget::NextTo(next_to) if self.is_set_aside(next_to) => AddWindowTarget::Auto,
             target => target,
         };
 
@@ -1199,6 +1199,14 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(idx) = self.limbo_idx(window) {
             return Some(self.limbo.remove(idx));
         }
+        if let Some(ws) = self.workspaces_mut().find(|ws| ws.has_strip_window(window)) {
+            let output = ws.current_output().cloned();
+            let removed = ws.take_from_strip(window)?;
+            if let Some(output) = output {
+                removed.tile.window().output_leave(&output);
+            }
+            return Some(removed);
+        }
 
         if let Some(state) = &self.interactive_move {
             match state {
@@ -1310,8 +1318,14 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
-        if let Some(idx) = self.limbo_idx(window) {
-            let tile = &mut self.limbo[idx].tile;
+        let tile = match self.limbo_idx(window) {
+            Some(idx) => Some(&mut self.limbo[idx].tile),
+            None => self
+                .workspaces_mut()
+                .flat_map(|ws| ws.strip_tiles_mut())
+                .find(|tile| tile.window().id() == window),
+        };
+        if let Some(tile) = tile {
             if let Some(serial) = serial {
                 tile.window_mut().on_commit(serial);
             }
@@ -1652,6 +1666,13 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(idx) = self.limbo_idx(window) {
             return Rectangle::from_size(self.limbo[idx].tile.view_size());
         }
+        if let Some(tile) = self
+            .workspaces()
+            .flat_map(|(_, _, ws)| ws.strip_tiles())
+            .find(|tile| tile.window().id() == window)
+        {
+            return Rectangle::from_size(tile.view_size());
+        }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 // Follow the scrolling layout logic and fit the popup horizontally within the
@@ -1684,7 +1705,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn scroll_amount_to_activate(&self, window: &W::Id) -> f64 {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return 0.;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -1705,7 +1726,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn should_trigger_focus_follows_mouse_on(&self, window: &W::Id) -> bool {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return false;
         }
         // During an animation, it's easy to trigger focus-follows-mouse on the previous workspace,
@@ -1747,6 +1768,8 @@ impl<W: LayoutElement> Layout<W> {
         if self.is_in_limbo(window) {
             self.take_out_of_limbo(window, None, ActivateWindow::Yes);
         }
+        // Or out of the strip, in place of the focused window.
+        self.swap_with_strip(window);
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;
@@ -1786,6 +1809,7 @@ impl<W: LayoutElement> Layout<W> {
         if self.is_in_limbo(window) {
             self.take_out_of_limbo(window, None, ActivateWindow::Yes);
         }
+        self.swap_with_strip(window);
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;
@@ -1959,6 +1983,9 @@ impl<W: LayoutElement> Layout<W> {
                         for win in ws.windows_mut() {
                             f(win, Some(&mon.output));
                         }
+                        for tile in ws.strip_tiles_mut() {
+                            f(tile.window_mut(), Some(&mon.output));
+                        }
                     }
                 }
             }
@@ -1966,6 +1993,9 @@ impl<W: LayoutElement> Layout<W> {
                 for ws in workspaces {
                     for win in ws.windows_mut() {
                         f(win, None);
+                    }
+                    for tile in ws.strip_tiles_mut() {
+                        f(tile.window_mut(), None);
                     }
                 }
             }
@@ -2127,7 +2157,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -2153,7 +2183,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -2395,6 +2425,9 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(id) = window.filter(|id| self.is_in_limbo(id)) {
             self.take_out_of_limbo(id, None, ActivateWindow::No);
         }
+        if let Some(id) = window {
+            self.unstash_window(id, false);
+        }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 return;
@@ -2551,7 +2584,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn center_window(&mut self, id: Option<&W::Id>) {
-        if id.is_some_and(|id| self.is_in_limbo(id)) {
+        if id.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -2714,6 +2747,26 @@ impl<W: LayoutElement> Layout<W> {
             assert!(
                 !self.workspaces().any(|(_, _, ws)| ws.has_window(id)),
                 "a window in limbo must not also be on a workspace"
+            );
+        }
+
+        for (_, _, ws) in self.workspaces() {
+            for tile in ws.strip_tiles() {
+                assert_eq!(self.clock, tile.clock);
+                tile.verify_invariants();
+                let id = tile.window().id();
+                assert!(
+                    !self.workspaces().any(|(_, _, ws)| ws.has_window(id)),
+                    "a window in the strip must not also be laid out"
+                );
+                assert!(
+                    !self.is_in_limbo(id),
+                    "a window in the strip must not be in limbo"
+                );
+            }
+            assert!(
+                ws.strip_windows().next().is_none() || ws.windows().next().is_some(),
+                "a workspace must not have only windows in the strip"
             );
         }
 
@@ -3334,7 +3387,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_window_width(&mut self, window: Option<&W::Id>, forwards: bool) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3360,7 +3413,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3400,7 +3453,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3426,7 +3479,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3452,7 +3505,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3485,7 +3538,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3551,7 +3604,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_side_view(&mut self, window: Option<&W::Id>) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -3584,7 +3637,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_window_floating(&mut self, window: Option<&W::Id>, floating: bool) {
-        if window.is_some_and(|id| self.is_in_limbo(id)) {
+        if window.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3640,7 +3693,7 @@ impl<W: LayoutElement> Layout<W> {
         y: PositionChange,
         animate: bool,
     ) {
-        if id.is_some_and(|id| self.is_in_limbo(id)) {
+        if id.is_some_and(|id| self.is_set_aside(id)) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3686,6 +3739,9 @@ impl<W: LayoutElement> Layout<W> {
     ) {
         if let Some(id) = window.filter(|id| self.is_in_limbo(id)) {
             self.take_out_of_limbo(id, None, ActivateWindow::No);
+        }
+        if let Some(id) = window {
+            self.unstash_window(id, false);
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
@@ -3905,7 +3961,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_fullscreen(&mut self, id: &W::Id, is_fullscreen: bool) {
-        if self.is_in_limbo(id) {
+        if self.is_set_aside(id) {
             return;
         }
         // Check if this is a request to unset the windowed fullscreen state.
@@ -3937,7 +3993,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_fullscreen(&mut self, id: &W::Id) {
-        if self.is_in_limbo(id) {
+        if self.is_set_aside(id) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -3955,7 +4011,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_windowed_fullscreen(&mut self, id: &W::Id) {
-        if self.is_in_limbo(id) {
+        if self.is_set_aside(id) {
             return;
         }
         let (_, window) = self.windows().find(|(_, win)| win.id() == id).unwrap();
@@ -3978,7 +4034,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) {
-        if self.is_in_limbo(id) {
+        if self.is_set_aside(id) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -3996,7 +4052,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_maximized(&mut self, id: &W::Id) {
-        if self.is_in_limbo(id) {
+        if self.is_set_aside(id) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -4868,6 +4924,13 @@ impl<W: LayoutElement> Layout<W> {
 
         let (removed, old_output) = if let Some(idx) = self.limbo_idx(window) {
             (self.limbo.remove(idx), None)
+        } else if self.is_in_strip(window) {
+            let ws = self
+                .workspaces_mut()
+                .find(|ws| ws.has_strip_window(window))
+                .unwrap();
+            let old_output = ws.current_output().cloned();
+            (ws.take_from_strip(window).unwrap(), old_output)
         } else {
             let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) else {
                 return false;
@@ -4995,7 +5058,7 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         delta: Point<f64, Logical>,
     ) -> bool {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return false;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -5027,7 +5090,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn interactive_resize_end(&mut self, window: &W::Id) {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -5222,7 +5285,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn start_open_animation_for_window(&mut self, window: &W::Id) {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return;
         }
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
@@ -5245,7 +5308,7 @@ impl<W: LayoutElement> Layout<W> {
         xray_has_blocked_out_layers: bool,
         window: &W::Id,
     ) {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return;
         }
         let _span = tracy_client::span!("Layout::store_unmap_snapshot");
@@ -5349,7 +5412,7 @@ impl<W: LayoutElement> Layout<W> {
         renderer: &mut GlesRenderer,
         window: &W::Id,
     ) {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return;
         }
         let zoom = self.interactive_move_zoom();
@@ -5401,7 +5464,7 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         blocker: TransactionBlocker,
     ) {
-        if self.is_in_limbo(window) {
+        if self.is_set_aside(window) {
             return;
         }
         let _span = tracy_client::span!("Layout::start_close_animation_for_window");
@@ -5672,9 +5735,11 @@ impl<W: LayoutElement> Layout<W> {
             .map(|move_| (self.monitor_for_output(&move_.output), move_.tile.window()))
             .into_iter();
 
-        let rest = self
-            .workspaces()
-            .flat_map(|(mon, _, ws)| ws.windows().map(move |win| (mon, win)));
+        let rest = self.workspaces().flat_map(|(mon, _, ws)| {
+            ws.windows()
+                .chain(ws.strip_windows())
+                .map(move |win| (mon, win))
+        });
 
         let limbo = self
             .limbo
@@ -5693,6 +5758,73 @@ impl<W: LayoutElement> Layout<W> {
     /// Whether this window is in limbo.
     pub fn is_in_limbo(&self, window: &W::Id) -> bool {
         self.limbo_idx(window).is_some()
+    }
+
+    /// Whether this window is in the strip of a workspace.
+    pub fn is_in_strip(&self, window: &W::Id) -> bool {
+        self.workspaces()
+            .any(|(_, _, ws)| ws.has_strip_window(window))
+    }
+
+    /// Whether this window is out of the layout: in limbo or in a strip.
+    pub fn is_set_aside(&self, window: &W::Id) -> bool {
+        self.is_in_limbo(window) || self.is_in_strip(window)
+    }
+
+    /// Windows in the strip of the active workspace on this output, newest first.
+    pub fn strip_windows(&self, output: &Output) -> impl Iterator<Item = &W> + '_ {
+        self.monitor_for_output(output)
+            .map(|mon| mon.active_workspace_ref())
+            .into_iter()
+            .flat_map(|ws| ws.strip_windows())
+    }
+
+    /// Sets a window aside in the strip of its workspace.
+    pub fn stash_window(&mut self, window: &W::Id) -> bool {
+        if self.is_set_aside(window) {
+            return false;
+        }
+        if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
+            if move_.tile.window().id() == window {
+                return false;
+            }
+        }
+        let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) else {
+            return false;
+        };
+        if !ws.is_i3() || ws.windows().nth(1).is_none() {
+            return false;
+        }
+
+        // Like limbo, leave fullscreen and maximized to keep the size simple.
+        ws.set_fullscreen(window, false);
+        ws.set_maximized(window, false);
+        ws.stash(window)
+    }
+
+    /// Takes a window out of the strip, back to its place if `to_place`, otherwise next to the
+    /// focused window.
+    pub fn unstash_window(&mut self, window: &W::Id, to_place: bool) -> bool {
+        let Some(ws) = self.workspaces_mut().find(|ws| ws.has_strip_window(window)) else {
+            return false;
+        };
+        ws.unstash(window, to_place)
+    }
+
+    /// Swaps a window in the strip with the focused window of its workspace.
+    pub fn swap_with_strip(&mut self, window: &W::Id) -> bool {
+        let Some(ws) = self.workspaces_mut().find(|ws| ws.has_strip_window(window)) else {
+            return false;
+        };
+        ws.swap_with_focused(window)
+    }
+
+    /// Moves a window in the strip to this position, counting from the newest.
+    pub fn move_in_strip(&mut self, window: &W::Id, idx: usize) -> bool {
+        let Some(ws) = self.workspaces_mut().find(|ws| ws.has_strip_window(window)) else {
+            return false;
+        };
+        ws.move_in_strip(window, idx)
     }
 
     /// Windows in limbo, newest first.

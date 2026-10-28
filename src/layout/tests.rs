@@ -492,6 +492,19 @@ enum Op {
         #[proptest(strategy = "0..=5usize")]
         idx: usize,
     },
+    Stash(#[proptest(strategy = "1..=5usize")] usize),
+    Unstash {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        to_place: bool,
+    },
+    SwapWithStrip(#[proptest(strategy = "1..=5usize")] usize),
+    MoveInStrip {
+        #[proptest(strategy = "1..=5usize")]
+        id: usize,
+        #[proptest(strategy = "0..=5usize")]
+        idx: usize,
+    },
     FocusWindowInColumn(#[proptest(strategy = "1..=5u8")] u8),
     FocusWindowTop,
     FocusWindowBottom,
@@ -1166,6 +1179,18 @@ impl Op {
             }
             Op::MoveInLimbo { id, idx } => {
                 layout.move_in_limbo(&id, idx);
+            }
+            Op::Stash(id) => {
+                layout.stash_window(&id);
+            }
+            Op::Unstash { id, to_place } => {
+                layout.unstash_window(&id, to_place);
+            }
+            Op::SwapWithStrip(id) => {
+                layout.swap_with_strip(&id);
+            }
+            Op::MoveInStrip { id, idx } => {
+                layout.move_in_strip(&id, idx);
             }
             Op::RestoreFromLimbo(id) => {
                 if let Some(ws_id) = layout.active_workspace().map(|ws| ws.id()) {
