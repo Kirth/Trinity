@@ -4646,8 +4646,8 @@ impl Niri {
             }
         }
 
-        // Then, the limbo drawer, below the hints so that its cards don't cover their labels.
-        let drawer_windows = self.drawer_windows(output);
+        // Then, the limbo drawer or the strips, below the hints so that their cards don't cover
+        // their labels.
         // In the overview, the row of cards fades in with it.
         let drawer_alpha = if self.layout.is_overview_open() {
             self.layout
@@ -4656,13 +4656,13 @@ impl Niri {
         } else {
             1.
         };
-        if !drawer_windows.is_empty() {
+        for (windows, placement) in self.card_groups(output) {
             self.drawer.render(
                 ctx.r(),
                 output,
                 output_size(output),
-                &drawer_windows,
-                self.drawer_placement(output),
+                &windows,
+                placement,
                 self.config.borrow().layout.border.urgent_color,
                 output.current_scale().fractional_scale(),
                 drawer_alpha,
@@ -6723,17 +6723,53 @@ impl Niri {
 
     /// Where the limbo drawer's shown cards are on this output, in output-local coordinates.
     pub fn drawer_slots(&self, output: &Output) -> Vec<Slot> {
-        let items: Vec<_> = self
-            .drawer_windows(output)
-            .iter()
-            .map(|mapped| crate::ui::drawer::Item::new(mapped))
-            .collect();
-        self.drawer.slots(
-            output,
-            output_size(output),
-            &items,
-            self.drawer_placement(output),
-        )
+        let mut slots = Vec::new();
+        for (windows, placement) in self.card_groups(output) {
+            let items: Vec<_> = windows
+                .iter()
+                .map(|mapped| crate::ui::drawer::Item::new(mapped))
+                .collect();
+            slots.extend(
+                self.drawer
+                    .slots(output, output_size(output), &items, placement),
+            );
+        }
+        slots
+    }
+
+    /// The cards on this output, in groups that each lay out on their own: the drawer, or in the
+    /// overview with limbo off, the strip of each workspace in its thumbnail.
+    pub fn card_groups(&self, output: &Output) -> Vec<(Vec<&Mapped>, DrawerPlacement)> {
+        if !self.layout.is_i3() {
+            return Vec::new();
+        }
+        if !self.layout.is_overview_open() || self.config.borrow().limbo.on {
+            let windows = self.drawer_windows(output);
+            if windows.is_empty() {
+                return Vec::new();
+            }
+            return vec![(windows, self.drawer_placement(output))];
+        }
+
+        let Some(mon) = self.layout.monitor_for_output(output) else {
+            return Vec::new();
+        };
+        let placement = self.drawer_placement(output);
+        mon.workspaces_with_render_geo()
+            .filter_map(|(ws, geo)| {
+                let area = ws.strip_area()?;
+                let zoom = geo.size.w / ws.view_size().w;
+                let band =
+                    Rectangle::new(geo.loc + area.loc.upscale(zoom), area.size.upscale(zoom));
+                let placement = DrawerPlacement {
+                    edge: LimboEdge::Right,
+                    overview: None,
+                    strip: Some(band),
+                    ..placement
+                };
+                Some((ws.strip_windows().collect(), placement))
+            })
+            .collect()
     }
 
     /// Windows in limbo, shown in the drawer on this output, newest first.
@@ -6781,17 +6817,16 @@ impl Niri {
 
     /// Whether only some of the limbo drawer's cards fit on this output.
     pub fn drawer_overflows(&self, output: &Output) -> bool {
-        let items: Vec<_> = self
-            .drawer_windows(output)
-            .iter()
-            .map(|mapped| crate::ui::drawer::Item::new(mapped))
-            .collect();
-        self.drawer.overflows(
-            output,
-            output_size(output),
-            &items,
-            self.drawer_placement(output),
-        )
+        self.card_groups(output)
+            .into_iter()
+            .any(|(windows, placement)| {
+                let items: Vec<_> = windows
+                    .iter()
+                    .map(|mapped| crate::ui::drawer::Item::new(mapped))
+                    .collect();
+                self.drawer
+                    .overflows(output, output_size(output), &items, placement)
+            })
     }
 
     /// Where the limbo drawer goes on this output.
@@ -6846,21 +6881,10 @@ impl Niri {
         output: &Output,
         pos_within_output: Point<f64, Logical>,
     ) -> Option<MappedId> {
-        let windows = self.drawer_windows(output);
-        if windows.is_empty() {
-            return None;
-        }
-        let items: Vec<_> = windows
-            .iter()
-            .map(|mapped| crate::ui::drawer::Item::new(mapped))
-            .collect();
-        self.drawer.window_under(
-            output,
-            output_size(output),
-            &items,
-            self.drawer_placement(output),
-            pos_within_output,
-        )
+        self.drawer_slots(output)
+            .into_iter()
+            .find(|slot| slot.hit.contains(pos_within_output))
+            .map(|slot| slot.id)
     }
 
     /// Labeled windows on this output hidden behind a fullscreen or maximized window on their

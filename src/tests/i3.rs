@@ -1442,3 +1442,42 @@ fn strip_actions_swap_windows_in() {
     all.sort_by_key(|id| id.get());
     assert_eq!(seen, all);
 }
+
+#[test]
+fn overview_shows_each_workspace_strip() {
+    let config = r#"layout { layout-mode "i3"; }; animations { off; }"#;
+    let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+
+    f.niri_state()
+        .do_action(niri_config::Action::OpenOverview, false);
+    f.niri().layout.advance_animations();
+    let niri = f.niri();
+    let groups = niri.card_groups(&output);
+    assert_eq!(groups.len(), 1);
+    let (windows, placement) = &groups[0];
+    assert_eq!(windows.iter().map(|m| m.id()).collect::<Vec<_>>(), [ids[1]]);
+
+    // The strip sits inside the workspace's thumbnail, scaled down with it.
+    let band = placement.strip.unwrap();
+    let mon = niri.layout.monitor_for_output(&output).unwrap();
+    let (_, geo) = mon
+        .workspaces_with_render_geo()
+        .find(|(ws, _)| ws.strip_windows().next().is_some())
+        .unwrap();
+    assert!(band.size.w < 216.);
+    // Give or take rounding the thumbnail to pixels.
+    let mut geo = geo;
+    geo.size += Size::from((1., 1.));
+    assert!(geo.contains_rect(band), "{geo:?} {band:?}");
+    let slots = niri.drawer_slots(&output);
+    assert_eq!(slots.len(), 1);
+    assert!(band.contains_rect(slots[0].card));
+}
