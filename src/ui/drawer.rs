@@ -3,39 +3,26 @@
 //! Hovering one slides it out and shows its title. The slide times itself rather than using an
 //! `Animation`, so it plays even with animations turned off.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
 use niri_config::{Color, LimboEdge};
-use ordered_float::NotNan;
-use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::Color32F;
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::niri_render_elements;
-use crate::render_helpers::label::{render_pill, LabelCache};
-use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
-use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
-use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 use crate::render_helpers::RenderCtx;
-use crate::ui::mru::{push_window_thumbnail, ThumbnailElement};
-use crate::utils::app_icon::{load_icon, AppIcons};
-use crate::utils::with_toplevel_role;
+pub use crate::ui::cards::{
+    along_edge, insertion_point, is_past_card, window_size,
+    CardRenderElement as DrawerRenderElement, Insert, Item, Slot,
+};
+use crate::ui::cards::{card_size, CardDecorations, GAP, MIN_CARD_H};
+use crate::ui::mru::push_window_thumbnail;
 use crate::window::mapped::MappedId;
 use crate::window::Mapped;
 
 /// Height of a card, in logical pixels, when they all fit.
 const CARD_H: f64 = 120.;
-/// Smallest a card gets when there are many; past that, only some show and scrolling cycles
-/// through them.
-const MIN_CARD_H: f64 = 48.;
-/// Widest a card gets, in logical pixels.
-const CARD_MAX_W: f64 = 240.;
-/// Gap between cards, in logical pixels.
-const GAP: f64 = 8.;
 /// Share of the output height (or width, at the bottom) the cards may take up.
 const MAX_STACK: f64 = 0.7;
 /// How much of a card peeks out when it isn't hovered, in logical pixels.
@@ -44,29 +31,12 @@ const PEEK: f64 = 10.;
 const URGENT_PEEK: f64 = 24.;
 /// How long a card takes to slide all the way out or back in.
 const SLIDE: Duration = Duration::from_millis(150);
-/// Outline drawn behind each card, so it stands out on any background.
-const OUTLINE: f64 = 1.;
-const OUTLINE_COLOR: [f32; 4] = [0., 0., 0., 0.6];
-/// Outline of a card whose window wants attention, in the urgent colour.
-const URGENT_OUTLINE: f64 = 3.;
 /// Opacity of the cards.
 const OPACITY: f32 = 0.8;
 /// Gap between a slid-out card and the edge of the screen, in millimetres.
 pub const MARGIN_MM: f64 = 5.;
-/// Title shown next to the hovered card.
-const CAPTION_FONT: &str = "sans 13px";
-const CAPTION_RADIUS: f64 = 12.;
-const CAPTION_FILL: [f64; 4] = [0.12, 0.12, 0.12, 0.7];
-/// Gap between the hovered card and its title, in logical pixels.
-const CAPTION_GAP: f64 = 8.;
-/// Longest title shown, in characters.
-const CAPTION_MAX_CHARS: usize = 60;
 /// How far a card has to slide out before its title shows.
 const CAPTION_EXTEND: f64 = 0.5;
-/// Size of the app icon on a card, in logical pixels, at most half the card.
-const ICON: f64 = 32.;
-/// Gap between the app icon and the card's corner, in logical pixels.
-const ICON_INSET: f64 = 6.;
 /// Height of a card in the overview row, as a share of the height of the row.
 const ROW_CARD_SHARE: f64 = 0.7;
 /// Share of the width of the overview row the cards may take up.
@@ -86,26 +56,6 @@ pub enum EdgePointer {
     Away,
 }
 
-/// A window in the drawer, as far as laying out its card goes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Item {
-    pub id: MappedId,
-    /// Size of the window.
-    pub size: Size<f64, Logical>,
-    /// Whether the window wants attention.
-    pub urgent: bool,
-}
-
-impl Item {
-    pub fn new(mapped: &Mapped) -> Self {
-        Self {
-            id: mapped.id(),
-            size: window_size(mapped),
-            urgent: crate::layout::LayoutElement::is_urgent(mapped),
-        }
-    }
-}
-
 /// Where the drawer goes on an output.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawerPlacement {
@@ -115,25 +65,6 @@ pub struct DrawerPlacement {
     /// In the overview: the band below the workspaces where the cards show in a row, in
     /// output-local coordinates.
     pub overview: Option<Rectangle<f64, Logical>>,
-}
-
-/// Where a card goes on the output.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Slot {
-    pub id: MappedId,
-    /// The whole card, partly past the right edge.
-    pub card: Rectangle<f64, Logical>,
-    /// Where the pointer counts as being on the card: the card and the gap between it and the
-    /// edge, on the output.
-    pub hit: Rectangle<f64, Logical>,
-}
-
-niri_render_elements! {
-    DrawerRenderElement<R> => {
-        Thumbnail = ThumbnailElement<R>,
-        SolidColor = SolidColorRenderElement,
-        Texture = PrimaryGpuTextureRenderElement,
-    }
 }
 
 #[derive(Debug, Default)]
@@ -154,14 +85,8 @@ pub struct Drawer {
     /// Outputs the cards animate on, as of the last tick.
     outputs: Vec<Output>,
     last_tick: Option<Duration>,
-    /// Outline behind each card, kept so that it keeps its element id.
-    outlines: RefCell<HashMap<MappedId, SolidColorBuffer>>,
-    /// Titles by window, title and scale.
-    captions: LabelCache<(MappedId, String, NotNan<f64>)>,
-    /// Icon files by app id.
-    icons: AppIcons,
-    /// Loaded icons by app id and size in physical pixels.
-    icon_buffers: LabelCache<(String, i32)>,
+    /// Outlines, titles and app icons of the cards.
+    decorations: CardDecorations,
     /// The output whose edge the pointer has been against, and since when, until the cards slide
     /// out.
     edge_since: Option<(Output, Duration)>,
@@ -183,7 +108,7 @@ impl Drawer {
         self.offset = self.offset.checked_rem(present.len()).unwrap_or(0);
         self.order = present.to_vec();
         self.extend.retain(|(_, id), _| present.contains(id));
-        self.outlines.get_mut().retain(|id, _| present.contains(id));
+        self.decorations.retain(|id| present.contains(&id));
         if self
             .hovered
             .as_ref()
@@ -447,9 +372,13 @@ impl Drawer {
             Some((slot, mapped))
         });
         if let Some((slot, mapped)) = hovered {
-            if let Some(elem) =
-                self.render_caption(ctx.renderer, mapped, slot.card, placement, scale)
-            {
+            if let Some(elem) = self.decorations.render_caption(
+                ctx.renderer,
+                mapped,
+                slot.card,
+                placement.edge,
+                scale,
+            ) {
                 push(DrawerRenderElement::Texture(elem));
             }
         }
@@ -465,9 +394,14 @@ impl Drawer {
             };
             let urgent = crate::layout::LayoutElement::is_urgent(*mapped);
             // The app icon, above its card.
-            if let Some(elem) =
-                self.render_icon(ctx.renderer, mapped, slot.card, placement, scale, opacity)
-            {
+            if let Some(elem) = self.decorations.render_icon(
+                ctx.renderer,
+                mapped,
+                slot.card,
+                placement.edge,
+                scale,
+                opacity,
+            ) {
                 push(DrawerRenderElement::Texture(elem));
             }
             push_window_thumbnail(
@@ -480,118 +414,15 @@ impl Drawer {
                 &mut |elem| push(DrawerRenderElement::Thumbnail(elem)),
             );
 
-            let (width, color): (f64, Color32F) = if urgent {
-                (URGENT_OUTLINE, urgent_color.into())
-            } else {
-                (OUTLINE, OUTLINE_COLOR.into())
-            };
-            let mut outline = slot.card;
-            outline.loc -= Point::from((width, width));
-            outline.size += Size::from((width * 2., width * 2.));
-            let mut outlines = self.outlines.borrow_mut();
-            let buffer = outlines
-                .entry(slot.id)
-                .or_insert_with(|| SolidColorBuffer::new(outline.size, OUTLINE_COLOR));
-            buffer.update(outline.size, color);
             push(DrawerRenderElement::SolidColor(
-                SolidColorRenderElement::from_buffer(
-                    buffer,
-                    outline.loc,
+                self.decorations.render_outline(
+                    slot.id,
+                    slot.card,
+                    urgent.then_some(urgent_color),
                     opacity,
-                    Kind::Unspecified,
                 ),
             ));
         }
-    }
-}
-
-impl Drawer {
-    /// Renders the title of a window next to its card.
-    fn render_caption<R: NiriRenderer>(
-        &self,
-        renderer: &mut R,
-        mapped: &Mapped,
-        card: Rectangle<f64, Logical>,
-        placement: DrawerPlacement,
-        scale: f64,
-    ) -> Option<PrimaryGpuTextureRenderElement> {
-        let title = with_toplevel_role(mapped.toplevel(), |role| role.title.clone())?;
-        let title = title.trim();
-        if title.is_empty() {
-            return None;
-        }
-
-        let key = (mapped.id(), title.to_owned(), NotNan::new(scale).ok()?);
-        let buffer = self.captions.get(key, || {
-            let markup = pango::glib::markup_escape_text(&truncate(title, CAPTION_MAX_CHARS));
-            render_pill(&markup, CAPTION_FONT, CAPTION_RADIUS, CAPTION_FILL, scale)
-        })?;
-        let texture =
-            TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
-
-        let loc = caption_loc(card, texture.logical_size(), placement.edge, CAPTION_GAP);
-        let loc = loc.to_physical_precise_round(scale).to_logical(scale);
-        let elem = TextureRenderElement::from_texture_buffer(
-            texture,
-            loc,
-            1.,
-            None,
-            None,
-            Kind::Unspecified,
-        );
-        Some(PrimaryGpuTextureRenderElement(elem))
-    }
-}
-
-impl Drawer {
-    /// Renders the app icon of a window in the corner of its card.
-    fn render_icon<R: NiriRenderer>(
-        &self,
-        renderer: &mut R,
-        mapped: &Mapped,
-        card: Rectangle<f64, Logical>,
-        placement: DrawerPlacement,
-        scale: f64,
-        opacity: f32,
-    ) -> Option<PrimaryGpuTextureRenderElement> {
-        let app_id = with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone())?;
-        let size = f64::min(ICON, f64::min(card.size.w, card.size.h) / 2.);
-        let px = (size * scale).round() as i32;
-        if px < 1 {
-            return None;
-        }
-
-        let buffer = self.icon_buffers.get((app_id.clone(), px), || {
-            let paths = self.icons.paths(&app_id);
-            load_icon(&paths, px, scale).ok_or_else(|| anyhow::anyhow!("no icon for {app_id}"))
-        })?;
-        let texture =
-            TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
-
-        let loc = icon_loc(card, texture.logical_size(), placement.edge);
-        let loc = loc.to_physical_precise_round(scale).to_logical(scale);
-        let elem = TextureRenderElement::from_texture_buffer(
-            texture,
-            loc,
-            opacity,
-            None,
-            None,
-            Kind::Unspecified,
-        );
-        Some(PrimaryGpuTextureRenderElement(elem))
-    }
-}
-
-/// Where the app icon goes on a card: in the bottom corner on the side facing into the screen.
-fn icon_loc(
-    card: Rectangle<f64, Logical>,
-    size: Size<f64, Logical>,
-    edge: LimboEdge,
-) -> Point<f64, Logical> {
-    let y = card.loc.y + card.size.h - ICON_INSET - size.h;
-    match edge {
-        LimboEdge::Right | LimboEdge::Bottom => Point::from((card.loc.x + ICON_INSET, y)),
-        LimboEdge::Left => Point::from((card.loc.x + card.size.w - ICON_INSET - size.w, y)),
     }
 }
 
@@ -632,98 +463,6 @@ pub fn edge_pointer(
     } else {
         EdgePointer::Away
     }
-}
-
-/// Cuts text to at most `max` characters, ending in an ellipsis if it was cut.
-fn truncate(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_owned(),
-    }
-}
-
-/// Where the title of a card goes: beside it, on the side facing into the screen, centred on it.
-fn caption_loc(
-    card: Rectangle<f64, Logical>,
-    size: Size<f64, Logical>,
-    edge: LimboEdge,
-    gap: f64,
-) -> Point<f64, Logical> {
-    let center = card.loc + card.size.downscale(2.).to_point();
-    match edge {
-        LimboEdge::Right => Point::from((card.loc.x - gap - size.w, center.y - size.h / 2.)),
-        LimboEdge::Left => Point::from((card.loc.x + card.size.w + gap, center.y - size.h / 2.)),
-        LimboEdge::Bottom => Point::from((center.x - size.w / 2., card.loc.y - gap - size.h)),
-    }
-}
-
-/// Position of a point along the drawer's edge: down it at the sides, across it at the bottom.
-pub fn along_edge(edge: LimboEdge, point: Point<f64, Logical>) -> f64 {
-    match edge {
-        LimboEdge::Left | LimboEdge::Right => point.y,
-        LimboEdge::Bottom => point.x,
-    }
-}
-
-/// Whether a point is further into the screen than a card reaches, by more than `distance`.
-pub fn is_past_card(
-    edge: LimboEdge,
-    card: Rectangle<f64, Logical>,
-    point: Point<f64, Logical>,
-    distance: f64,
-) -> bool {
-    match edge {
-        LimboEdge::Right => point.x < card.loc.x - distance,
-        LimboEdge::Left => point.x > card.loc.x + card.size.w + distance,
-        LimboEdge::Bottom => point.y < card.loc.y - distance,
-    }
-}
-
-/// Where a dragged card goes among the other shown cards, for a pointer at this position along
-/// the edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Insert {
-    Before(MappedId),
-    After(MappedId),
-}
-
-/// Where the dragged card goes: before the first other card whose middle is past the pointer,
-/// or after the last one.
-pub fn insertion_point(
-    slots: &[Slot],
-    edge: LimboEdge,
-    dragged: MappedId,
-    along: f64,
-) -> Option<Insert> {
-    let middle = |slot: &Slot| {
-        along_edge(
-            edge,
-            slot.card.loc + slot.card.size.downscale(2.).to_point(),
-        )
-    };
-    let mut others = slots.iter().filter(|slot| slot.id != dragged);
-    let mut last = None;
-    for slot in &mut others {
-        if middle(slot) > along {
-            return Some(Insert::Before(slot.id));
-        }
-        last = Some(slot.id);
-    }
-    last.map(Insert::After)
-}
-
-/// Size of a window for its card.
-pub fn window_size(mapped: &Mapped) -> Size<f64, Logical> {
-    let size = crate::layout::LayoutElement::size(mapped).to_f64();
-    Size::from((size.w.max(1.), size.h.max(1.)))
-}
-
-/// Size of a card for a window, at most `card_h` high and `CARD_MAX_W` wide, keeping its
-/// aspect ratio.
-fn card_size(size: Size<f64, Logical>, card_h: f64) -> Size<f64, Logical> {
-    let aspect = size.w / size.h;
-    let w = f64::min(aspect * card_h, CARD_MAX_W).max(1.);
-    Size::from((w, (w / aspect).max(1.)))
 }
 
 /// Where the cards go in the overview: in a row centred in the band below the workspaces, left
@@ -921,6 +660,7 @@ fn slots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::cards::{caption_loc, icon_loc, truncate, CARD_MAX_W};
 
     fn ids(n: usize) -> Vec<MappedId> {
         (0..n).map(|_| MappedId::next()).collect()

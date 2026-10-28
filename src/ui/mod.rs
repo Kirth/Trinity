@@ -1,4 +1,5 @@
 pub mod ace_hints;
+pub mod cards;
 pub mod config_error_notification;
 pub mod drawer;
 pub mod exit_confirm_dialog;
