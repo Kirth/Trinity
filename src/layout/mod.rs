@@ -5809,6 +5809,14 @@ impl<W: LayoutElement> Layout<W> {
             .strip_area()
     }
 
+    /// Where the panel behind the strip of the active workspace on this output goes, in
+    /// output-local coordinates, while it has windows.
+    pub fn strip_panel_area(&self, output: &Output) -> Option<Rectangle<f64, Logical>> {
+        self.monitor_for_output(output)?
+            .active_workspace_ref()
+            .strip_panel_area()
+    }
+
     /// Sets a window aside in the strip of its workspace.
     pub fn stash_window(&mut self, window: &W::Id) -> bool {
         if self.is_set_aside(window) {

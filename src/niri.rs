@@ -4669,7 +4669,6 @@ impl Niri {
                 &windows,
                 placement,
                 self.config.borrow().layout.border.urgent_color,
-                &self.config.borrow().strip,
                 output.current_scale().fractional_scale(),
                 drawer_alpha,
                 &mut |elem| push(elem.into()),
@@ -4784,6 +4783,23 @@ impl Niri {
         } else {
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
+
+            // The panels behind the strips, below the top layer so that a bar shows over them.
+            for (_, placement) in self.card_groups(output) {
+                self.drawer.render_panel(
+                    ctx.renderer,
+                    output,
+                    placement,
+                    &self.config.borrow().strip,
+                    output_scale.x,
+                    drawer_alpha,
+                    &mut |elem| {
+                        push(OutputRenderElements::from(DrawerRenderElement::Border(
+                            elem,
+                        )))
+                    },
+                );
+            }
 
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
@@ -6763,14 +6779,15 @@ impl Niri {
         let placement = self.drawer_placement(output);
         mon.workspaces_with_render_geo()
             .filter_map(|(ws, geo)| {
-                let area = ws.strip_area()?;
                 let zoom = geo.size.w / ws.view_size().w;
-                let band =
-                    Rectangle::new(geo.loc + area.loc.upscale(zoom), area.size.upscale(zoom));
+                let scaled = |area: Rectangle<f64, Logical>| {
+                    Rectangle::new(geo.loc + area.loc.upscale(zoom), area.size.upscale(zoom))
+                };
                 let placement = DrawerPlacement {
                     edge: LimboEdge::Right,
                     overview: None,
-                    strip: Some(band),
+                    strip: Some(scaled(ws.strip_area()?)),
+                    strip_panel: ws.strip_panel_area().map(scaled),
                     ..placement
                 };
                 Some((ws.strip_windows().collect(), placement))
@@ -6867,6 +6884,7 @@ impl Niri {
         let strip = (!self.config.borrow().limbo.legacy_mode)
             .then(|| self.layout.strip_area(output))
             .flatten();
+        let strip_panel = strip.and_then(|_| self.layout.strip_panel_area(output));
         let edge = if strip.is_some() {
             LimboEdge::Right
         } else {
@@ -6878,6 +6896,7 @@ impl Niri {
             margin,
             overview,
             strip,
+            strip_panel,
         }
     }
 

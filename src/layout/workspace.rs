@@ -2648,6 +2648,16 @@ impl<W: LayoutElement> Workspace<W> {
         ))
     }
 
+    /// Where the panel behind the strip goes, in workspace coordinates, while it has windows:
+    /// from the strip to the right edge, and from the top to the bottom of the workspace.
+    pub fn strip_panel_area(&self) -> Option<Rectangle<f64, Logical>> {
+        let strip = self.strip_area()?;
+        Some(Rectangle::new(
+            Point::from((strip.loc.x, 0.)),
+            Size::from((self.view_size.w - strip.loc.x, self.view_size.h)),
+        ))
+    }
+
     /// Hands the tiling layout its area again, after the strip filled up or emptied, and sizes
     /// the windows in the strip to match.
     fn update_tiling_area(&mut self) {

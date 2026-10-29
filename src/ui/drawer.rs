@@ -51,8 +51,8 @@ const ROW_MAX_STACK: f64 = 0.9;
 const ROW_MAX_ASPECT: f64 = 2.5;
 /// How long the pointer has to stay against the edge beside the cards to slide them all out.
 const EDGE_DWELL: Duration = Duration::from_millis(150);
-/// Gap between the panel behind a strip and the edges of its band, in logical pixels.
-const PANEL_INSET: f64 = 4.;
+/// Room between the cards in a strip and the edges of its band, in logical pixels.
+const STRIP_PADDING: f64 = 14.;
 /// Width of the rim around the panel behind a strip, in logical pixels.
 const PANEL_RIM: f32 = 1.;
 
@@ -78,6 +78,9 @@ pub struct DrawerPlacement {
     /// For a workspace strip: the band at the right edge where the cards show in a column, in
     /// output-local coordinates.
     pub strip: Option<Rectangle<f64, Logical>>,
+    /// For a workspace strip: where its panel goes, from the band to the right edge and from the
+    /// top to the bottom of the screen, in output-local coordinates.
+    pub strip_panel: Option<Rectangle<f64, Logical>>,
 }
 
 #[derive(Debug, Default)]
@@ -370,7 +373,6 @@ impl Drawer {
         windows: &[&Mapped],
         placement: DrawerPlacement,
         urgent_color: Color,
-        style: &niri_config::Strip,
         scale: f64,
         alpha: f32,
         push: &mut dyn FnMut(DrawerRenderElement<R>),
@@ -463,37 +465,42 @@ impl Drawer {
                 ),
             ));
         }
-
-        // The panel behind a strip, below its cards.
-        if let Some(band) = placement.strip {
-            if !style.off && BorderRenderElement::has_shader(ctx.renderer) {
-                for elem in self.render_panel(output, band, style, scale, alpha) {
-                    push(DrawerRenderElement::Border(elem));
-                }
-            }
-        }
     }
 
-    /// Renders the panel behind a strip in this band, and its rim on top.
-    fn render_panel(
+    /// Renders the panel behind a strip, with its rim on top. It goes below the top layer, so
+    /// that a bar shows over it, but above the windows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_panel(
         &self,
+        renderer: &mut impl NiriRenderer,
         output: &Output,
-        band: Rectangle<f64, Logical>,
+        placement: DrawerPlacement,
         style: &niri_config::Strip,
         scale: f64,
         alpha: f32,
-    ) -> [BorderRenderElement; 2] {
+        push: &mut dyn FnMut(BorderRenderElement),
+    ) {
+        let Some(area) = placement.strip_panel else {
+            return;
+        };
+        if style.off || !BorderRenderElement::has_shader(renderer) {
+            return;
+        }
         // Scaled down with the band, as in the overview.
-        let zoom = band.size.w / STRIP_WIDTH;
-        let inset = PANEL_INSET * zoom;
-        let mut panel = band;
-        panel.loc += Point::from((inset, inset));
-        panel.size.w = (panel.size.w - inset * 2.).max(1.);
-        panel.size.h = (panel.size.h - inset * 2.).max(1.);
-        let panel = panel.to_physical_precise_round(scale).to_logical(scale);
+        let zoom = area.size.w / STRIP_WIDTH;
+        let panel = panel_rect(area, zoom)
+            .to_physical_precise_round(scale)
+            .to_logical(scale);
 
-        let radius = CornerRadius::from(style.corner_radius as f32 * zoom as f32)
-            .fit_to(panel.size.w as f32, panel.size.h as f32);
+        // Round only the corners facing into the screen.
+        let r = style.corner_radius as f32 * zoom as f32;
+        let radius = CornerRadius {
+            top_left: r,
+            top_right: 0.,
+            bottom_right: 0.,
+            bottom_left: r,
+        }
+        .fit_to(panel.size.w as f32, panel.size.h as f32);
         let (from, to, angle, interpolation) = match style.background_gradient {
             Some(gradient) => (
                 gradient.from,
@@ -549,10 +556,8 @@ impl Drawer {
             scale as f32,
             alpha,
         );
-        [
-            rim.clone().with_location(panel.loc),
-            background.clone().with_location(panel.loc),
-        ]
+        push(rim.clone().with_location(panel.loc));
+        push(background.clone().with_location(panel.loc));
     }
 }
 
@@ -681,6 +686,16 @@ fn overview_slots(
         .collect()
 }
 
+/// Where the panel behind a strip goes: over the whole panel area, and past its top, right and
+/// bottom edges by the width of the rim, so that only the rim facing into the screen shows.
+fn panel_rect(area: Rectangle<f64, Logical>, zoom: f64) -> Rectangle<f64, Logical> {
+    let rim = f64::from(PANEL_RIM) * zoom;
+    Rectangle::new(
+        area.loc - Point::from((0., rim)),
+        area.size + Size::from((rim, rim * 2.)),
+    )
+}
+
 /// Where the cards go in a workspace strip: in a column from the top of the band, newest first,
 /// as wide as the band allows.
 fn strip_slots(
@@ -693,8 +708,10 @@ fn strip_slots(
         return Vec::new();
     }
 
-    let w = (band.size.w - 2. * GAP).max(1.);
-    let room = (band.size.h - 2. * GAP).max(1.);
+    // Scaled down with the band, as in the overview.
+    let pad = STRIP_PADDING * band.size.w / STRIP_WIDTH;
+    let w = (band.size.w - 2. * pad).max(1.);
+    let room = (band.size.h - 2. * pad).max(1.);
     // Each card is as wide as the band, at most as high as wide.
     let full_h = |item: &Item| (w * item.size.h / item.size.w).clamp(1., w);
     let total = |items: &[&Item], scale: f64| -> f64 {
@@ -732,7 +749,7 @@ fn strip_slots(
         }
     }
 
-    let mut next = band.loc.y + GAP;
+    let mut next = band.loc.y + pad;
     shown_items
         .into_iter()
         .map(|item| {
@@ -901,6 +918,7 @@ mod tests {
             margin: MARGIN,
             overview: None,
             strip: None,
+            strip_panel: None,
         }
     }
 
@@ -1368,5 +1386,39 @@ mod tests {
         let on_b = drawer.slots(&screens[1], output(), &items, right);
         assert!(on_a[0].card.loc.x < 1920. - PEEK);
         assert_eq!(on_b[0].card.loc.x, 1920. - PEEK);
+    }
+
+    #[test]
+    fn strip_cards_keep_their_padding() {
+        let band = Rectangle::new(Point::from((1704., 40.)), Size::from((STRIP_WIDTH, 1040.)));
+        let ids = ids(2);
+        let slots = strip_slots(band, &items(&ids), 0, None);
+
+        // As wide as the band minus the padding on both sides, starting the padding down.
+        let card = slots[0].card;
+        assert_eq!(card.size.w, STRIP_WIDTH - 2. * STRIP_PADDING);
+        assert_eq!(card.loc.x, band.loc.x + STRIP_PADDING);
+        assert_eq!(card.loc.y, band.loc.y + STRIP_PADDING);
+        assert_eq!(slots[1].card.loc.y, card.loc.y + card.size.h + GAP);
+    }
+
+    #[test]
+    fn strip_cards_shrink_to_fit_the_padded_band() {
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 400.)));
+        let ids = ids(4);
+        let slots = strip_slots(band, &items(&ids), 0, None);
+        let last = slots.last().unwrap().card;
+        assert!(last.loc.y + last.size.h <= band.size.h - STRIP_PADDING + 0.001);
+    }
+
+    #[test]
+    fn panel_runs_past_the_screen_edges() {
+        let area = Rectangle::new(Point::from((1704., 0.)), Size::from((216., 1080.)));
+        let rim = f64::from(PANEL_RIM);
+        let panel = panel_rect(area, 1.);
+        // Starts at the strip, and goes past the top, right and bottom by the rim.
+        assert_eq!(panel.loc, Point::from((1704., -rim)));
+        assert_eq!(panel.loc.x + panel.size.w, 1920. + rim);
+        assert_eq!(panel.loc.y + panel.size.h, 1080. + rim);
     }
 }
