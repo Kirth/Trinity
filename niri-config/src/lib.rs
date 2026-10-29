@@ -2693,7 +2693,7 @@ mod tests {
                     b: 1.0,
                     a: 0.14901961,
                 },
-                corner_radius: 16.0,
+                corner_radius: 0.0,
             },
         }
         "#);

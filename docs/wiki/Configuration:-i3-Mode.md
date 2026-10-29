@@ -117,7 +117,8 @@ strip {
     background-gradient from="#2b364db3" to="#10141ecc" angle=180
     // The thin rim around the panel; make it transparent for none.
     rim-color "#ffffff26"
-    corner-radius 16
+    // Square by default; round the corners facing into the screen.
+    corner-radius 12
 
     // No panel, just the thumbnails.
     // off

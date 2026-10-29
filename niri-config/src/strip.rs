@@ -31,7 +31,7 @@ impl Default for Strip {
                 in_: GradientInterpolation::default(),
             }),
             rim_color: Color::from_rgba8_unpremul(0xff, 0xff, 0xff, 0x26),
-            corner_radius: 16.,
+            corner_radius: 0.,
         }
     }
 }
