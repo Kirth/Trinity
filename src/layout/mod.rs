@@ -1199,15 +1199,6 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(idx) = self.limbo_idx(window) {
             return Some(self.limbo.remove(idx));
         }
-        if let Some(ws) = self.workspaces_mut().find(|ws| ws.has_strip_window(window)) {
-            let output = ws.current_output().cloned();
-            let removed = ws.take_from_strip(window)?;
-            if let Some(output) = output {
-                removed.tile.window().output_leave(&output);
-            }
-            return Some(removed);
-        }
-
         if let Some(state) = &self.interactive_move {
             match state {
                 InteractiveMoveState::Starting { window_id, .. } => {
@@ -1247,8 +1238,8 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
                     for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
-                        if ws.has_window(window) {
-                            let removed = ws.remove_tile(window, transaction);
+                        if ws.has_window(window) || ws.has_strip_window(window) {
+                            let removed = ws.remove_tile_or_from_strip(window, transaction);
 
                             // With positional workspaces, removing the last window may also make
                             // the empty workspaces below it removable, so do a full clean-up.
@@ -1290,8 +1281,8 @@ impl<W: LayoutElement> Layout<W> {
             }
             MonitorSet::NoOutputs { workspaces, .. } => {
                 for (idx, ws) in workspaces.iter_mut().enumerate() {
-                    if ws.has_window(window) {
-                        let removed = ws.remove_tile(window, transaction);
+                    if ws.has_window(window) || ws.has_strip_window(window) {
+                        let removed = ws.remove_tile_or_from_strip(window, transaction);
 
                         // Clean up empty workspaces.
                         if !ws.has_windows_or_name() {
@@ -2764,10 +2755,6 @@ impl<W: LayoutElement> Layout<W> {
                     "a window in the strip must not be in limbo"
                 );
             }
-            assert!(
-                ws.strip_windows().next().is_none() || ws.windows().next().is_some(),
-                "a workspace must not have only windows in the strip"
-            );
         }
 
         let mut move_win_id = None;
@@ -5830,7 +5817,7 @@ impl<W: LayoutElement> Layout<W> {
         let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(window)) else {
             return false;
         };
-        if !ws.is_i3() || ws.windows().nth(1).is_none() {
+        if !ws.is_i3() {
             return false;
         }
 

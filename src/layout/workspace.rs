@@ -1051,14 +1051,6 @@ impl<W: LayoutElement> Workspace<W> {
 
         self.update_focus_floating_tiling_after_removing(from_floating);
 
-        // Never leave only the strip: bring back its newest window.
-        if self.windows().next().is_none() {
-            let newest = self.strip_windows().next().map(|win| win.id().clone());
-            if let Some(id) = newest {
-                self.unstash(&id, true);
-            }
-        }
-
         removed
     }
 
@@ -2713,12 +2705,12 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// Sets a window aside in the strip.
     ///
-    /// Only in i3 mode, and never the last window outside the strip.
+    /// Only in i3 mode.
     pub fn stash(&mut self, window: &W::Id) -> bool {
         let Some(tiling) = &self.tiling else {
             return false;
         };
-        if !self.has_window(window) || self.windows().nth(1).is_none() {
+        if !self.has_window(window) {
             return false;
         }
 
@@ -2755,6 +2747,22 @@ impl<W: LayoutElement> Workspace<W> {
         let entry = self.strip.remove(idx);
         self.update_tiling_area();
         Some(entry.removed)
+    }
+
+    /// Removes a window, whether it is laid out or in the strip.
+    pub(super) fn remove_tile_or_from_strip(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+    ) -> RemovedTile<W> {
+        if self.has_window(window) {
+            return self.remove_tile(window, transaction);
+        }
+        let removed = self.take_from_strip(window).unwrap();
+        if let Some(output) = &self.output {
+            removed.tile.window().output_leave(output);
+        }
+        removed
     }
 
     /// Swaps a window in the strip with the focused tiled window: it takes that window's place

@@ -1361,7 +1361,7 @@ fn clicking_a_strip_card_swaps_it_in() {
 }
 
 #[test]
-fn the_only_window_stays_out_of_the_strip() {
+fn the_only_window_can_go_to_the_strip() {
     let mut f = Fixture::with_config(i3_config());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -1369,6 +1369,10 @@ fn the_only_window_stays_out_of_the_strip() {
     let _first = open_window(&mut f, id);
     let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
     poof(&mut f, 1000);
+    assert_eq!(strip_ids(&mut f), [ids[0]]);
+    assert_eq!(focused_id(&mut f), None);
+
+    limbo_action(&mut f, id, niri_config::Action::PullFromLimbo);
     assert!(strip_ids(&mut f).is_empty());
     assert_eq!(focused_id(&mut f), Some(ids[0]));
 }

@@ -854,10 +854,10 @@ fn stashing_makes_room_for_the_strip() {
 }
 
 #[test]
-fn last_window_stays_out_of_the_strip() {
+fn last_window_can_go_to_the_strip() {
     let layout = tiling_layout([add_window(1), add_window(2), Op::Stash(1), Op::Stash(2)]);
-    assert_eq!(strip(&layout), [1]);
-    assert_eq!(focused(&layout), 2);
+    assert_eq!(strip(&layout), [2, 1]);
+    assert!(layout.focus().is_none());
 }
 
 #[test]
@@ -914,7 +914,7 @@ fn activating_a_strip_window_swaps_it_in() {
 }
 
 #[test]
-fn closing_the_last_laid_out_window_brings_back_the_strip() {
+fn closing_the_last_laid_out_window_keeps_the_strip() {
     let layout = tiling_layout([
         add_window(1),
         add_window(2),
@@ -923,8 +923,8 @@ fn closing_the_last_laid_out_window_brings_back_the_strip() {
         Op::Stash(2),
         Op::CloseWindow(3),
     ]);
-    assert_eq!(strip(&layout), [1]);
-    assert_eq!(focused(&layout), 2);
+    assert_eq!(strip(&layout), [2, 1]);
+    assert!(layout.focus().is_none());
 }
 
 #[test]
