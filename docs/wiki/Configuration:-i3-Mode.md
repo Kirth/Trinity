@@ -82,6 +82,9 @@ Holding the key down doesn't count.
 You can also throw a window there with the mouse: drag it and let go while it's moving quickly into the right edge of the screen.
 Set one aside by accident? Press `move-column-left` within half a second, and the window comes back exactly where it was.
 
+Thumbnails of the same app stack together like a pile of paper, in the order of their newest window: the newest in front with the app's icon and a count, the others tucked behind it, a little smaller, each showing its bottom edge (for a terminal, its latest lines).
+Hover a stack to spread it out, so that you can pick any of its windows.
+
 Click a thumbnail to swap its window with the focused one: it takes that window's place in the layout, and the focused window goes to the top of the strip.
 Shift+click brings it in next to the focused window instead, without swapping.
 Drag a thumbnail along the strip to rearrange it, or into the screen to pull its window out and drop it anywhere.

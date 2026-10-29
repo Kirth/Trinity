@@ -53,6 +53,12 @@ const ROW_MAX_ASPECT: f64 = 2.5;
 const EDGE_DWELL: Duration = Duration::from_millis(150);
 /// Room between the cards in a strip and the edges of its band, in logical pixels.
 const STRIP_PADDING: f64 = 14.;
+/// How much of a card tucked behind another in a stack shows, as a share of its height.
+const STACK_PEEK: f64 = 0.35;
+/// Least of a tucked card that shows, in logical pixels.
+const STACK_MIN_PEEK: f64 = 24.;
+/// How much smaller each card further back in a stack is, as a share of its size.
+const STACK_SHRINK: f64 = 0.04;
 /// Width of the rim around the panel behind a strip, in logical pixels.
 const PANEL_RIM: f32 = 1.;
 
@@ -274,7 +280,13 @@ impl Drawer {
             return overview_slots(band, items, self.offset, self.dragging_on(output));
         }
         if let Some(band) = placement.strip {
-            return strip_slots(band, items, self.offset, self.dragging_on(output));
+            return strip_slots(
+                band,
+                items,
+                self.offset,
+                self.dragging_on(output),
+                self.hovered_on(output),
+            );
         }
         slots(
             output_size,
@@ -421,10 +433,27 @@ impl Drawer {
             let info = CardInfo::new(mapped);
             // What providers want shown, above the card.
             if let Some(badge) = &info.badge {
-                if let Some(elem) =
-                    self.decorations
-                        .render_badge(ctx.renderer, badge, slot.card, scale, opacity)
-                {
+                if let Some(elem) = self.decorations.render_badge(
+                    ctx.renderer,
+                    badge,
+                    slot.card,
+                    false,
+                    scale,
+                    opacity,
+                ) {
+                    push(DrawerRenderElement::Texture(elem));
+                }
+            }
+            // How many cards a stack holds, on its front card.
+            if slot.stack > 1 {
+                if let Some(elem) = self.decorations.render_badge(
+                    ctx.renderer,
+                    &slot.stack.to_string(),
+                    slot.card,
+                    true,
+                    scale,
+                    opacity,
+                ) {
                     push(DrawerRenderElement::Texture(elem));
                 }
             }
@@ -434,15 +463,20 @@ impl Drawer {
                         .render_progress(slot.id, slot.card, progress, opacity),
                 ));
             }
-            // The app icon, above its card.
-            if let Some(elem) = self.decorations.render_icon(
-                ctx.renderer,
-                mapped,
-                slot.card,
-                placement.edge,
-                scale,
-                opacity,
-            ) {
+            // The app icon, above its card, once per stack.
+            let icon = (!slot.tucked)
+                .then(|| {
+                    self.decorations.render_icon(
+                        ctx.renderer,
+                        mapped,
+                        slot.card,
+                        placement.edge,
+                        scale,
+                        opacity,
+                    )
+                })
+                .flatten();
+            if let Some(elem) = icon {
                 push(DrawerRenderElement::Texture(elem));
             }
             push_window_thumbnail(
@@ -681,6 +715,8 @@ fn overview_slots(
                 id,
                 card,
                 hit: card,
+                stack: 0,
+                tucked: false,
             }
         })
         .collect()
@@ -696,86 +732,165 @@ fn panel_rect(area: Rectangle<f64, Logical>, zoom: f64) -> Rectangle<f64, Logica
     )
 }
 
-/// Where the cards go in a workspace strip: in a column from the top of the band, newest first,
-/// as wide as the band allows.
+/// Where the cards go in a workspace strip: in a column from the top of the band, as wide as the
+/// band allows. The cards of one app stack together, like a pile of paper: the newest in front,
+/// the others tucked behind it showing their bottom. Hovering a stack spreads it out.
 fn strip_slots(
     band: Rectangle<f64, Logical>,
     items: &[Item],
     offset: usize,
     drag: Option<(MappedId, f64)>,
+    hovered: Option<MappedId>,
 ) -> Vec<Slot> {
     if items.is_empty() {
         return Vec::new();
     }
 
     // Scaled down with the band, as in the overview.
-    let pad = STRIP_PADDING * band.size.w / STRIP_WIDTH;
+    let zoom = band.size.w / STRIP_WIDTH;
+    let pad = STRIP_PADDING * zoom;
     let w = (band.size.w - 2. * pad).max(1.);
     let room = (band.size.h - 2. * pad).max(1.);
-    // Each card is as wide as the band, at most as high as wide.
-    let full_h = |item: &Item| (w * item.size.h / item.size.w).clamp(1., w);
-    let total = |items: &[&Item], scale: f64| -> f64 {
-        items.iter().map(|item| full_h(item) * scale).sum::<f64>() + GAP * (items.len() as f64 - 1.)
+
+    // The cards of each app, in the order of their newest window, newest first within.
+    let mut groups: Vec<Vec<&Item>> = Vec::new();
+    for item in items {
+        match groups.iter_mut().find(|g| g[0].group == item.group) {
+            Some(group) => group.push(item),
+            None => groups.push(vec![item]),
+        }
+    }
+    // The stack under the pointer, or with a card being dragged, spreads out.
+    let spread = |id: Option<MappedId>| {
+        id.and_then(|id| items.iter().find(|item| item.id == id))
+            .map(|item| item.group)
+    };
+    let spread = [spread(hovered), spread(drag.map(|(id, _)| id))];
+    let stacked = |group: &[&Item]| group.len() > 1 && !spread.contains(&Some(group[0].group));
+
+    // Each card is as wide as the band, at most as high as wide; further back in a stack, a bit
+    // smaller.
+    let size_of = |item: &Item, depth: usize, scale: f64| {
+        let h = (w * item.size.h / item.size.w).clamp(1., w) * scale;
+        let size: Size<f64, Logical> = Size::from(((h * item.size.w / item.size.h).min(w), h));
+        let shrink = (1. - STACK_SHRINK * depth as f64).max(0.5);
+        size.upscale(shrink)
+    };
+    let peek = |h: f64| (h * STACK_PEEK).max(STACK_MIN_PEEK * zoom).min(h);
+    let group_len = |group: &[&Item], scale: f64| -> f64 {
+        if stacked(group) {
+            let mut len = size_of(group[0], 0, scale).h;
+            for (depth, item) in group.iter().enumerate().skip(1) {
+                len += peek(size_of(item, depth, scale).h);
+            }
+            len
+        } else {
+            group
+                .iter()
+                .map(|item| size_of(item, 0, scale).h)
+                .sum::<f64>()
+                + GAP * (group.len() as f64 - 1.)
+        }
+    };
+    let total = |groups: &[&Vec<&Item>], scale: f64| -> f64 {
+        groups.iter().map(|g| group_len(g, scale)).sum::<f64>() + GAP * (groups.len() as f64 - 1.)
     };
 
-    // Shrink the cards if they don't all fit, and past the smallest size, show as many as fit
-    // starting at the offset, like the drawer does.
-    let mut shown_items: Vec<&Item> = items.iter().collect();
+    // Shrink the cards if they don't all fit, and past the smallest size, show as many stacks as
+    // fit starting at the offset, like the drawer does.
+    let mut shown: Vec<&Vec<&Item>> = groups.iter().collect();
     let mut scale = 1.;
-    let full = total(&shown_items, 1.);
-    if full > room {
-        let gaps = GAP * (items.len() as f64 - 1.);
-        scale = ((room - gaps) / (full - gaps)).max(0.);
-        let smallest = items.iter().map(full_h).fold(f64::MAX, f64::min);
-        if smallest * scale < MIN_CARD_H {
-            scale = (MIN_CARD_H / smallest).min(1.);
-            let n = items.len();
-            shown_items.clear();
-            let mut used = 0.;
-            for i in 0..n {
-                let item = &items[(offset + i) % n];
-                let len = full_h(item) * scale;
-                let next = if shown_items.is_empty() {
-                    len
-                } else {
-                    used + GAP + len
-                };
-                if !shown_items.is_empty() && next > room {
-                    break;
-                }
-                used = next;
-                shown_items.push(item);
+    // The gaps stay, and the least a tucked card shows doesn't shrink linearly, so close in.
+    let gaps = total(&shown, 0.);
+    for _ in 0..8 {
+        let len = total(&shown, scale);
+        if len <= room + 0.001 {
+            break;
+        }
+        scale *= ((room - gaps) / (len - gaps)).clamp(0., 1.);
+    }
+    let smallest = items
+        .iter()
+        .map(|item| size_of(item, 0, 1.).h)
+        .fold(f64::MAX, f64::min);
+    if smallest * scale < MIN_CARD_H {
+        scale = (MIN_CARD_H / smallest).min(1.);
+        let n = groups.len();
+        shown.clear();
+        let mut used = 0.;
+        for i in 0..n {
+            let group = &groups[(offset + i) % n];
+            let len = group_len(group, scale);
+            let next = if shown.is_empty() {
+                len
+            } else {
+                used + GAP + len
+            };
+            if !shown.is_empty() && next > room {
+                break;
             }
+            used = next;
+            shown.push(group);
         }
     }
 
+    let mut slots = Vec::new();
     let mut next = band.loc.y + pad;
-    shown_items
-        .into_iter()
-        .map(|item| {
+    for group in shown {
+        let is_stacked = stacked(group);
+        let mut prev_bottom = next;
+        for (depth, item) in group.iter().enumerate() {
             let id = item.id;
-            let h = full_h(item) * scale;
-            let size = Size::from(((h * item.size.w / item.size.h).min(w), h));
+            let tucked = is_stacked && depth > 0;
+            let size = size_of(item, if is_stacked { depth } else { 0 }, scale);
             let x = band.loc.x + (band.size.w - size.w) / 2.;
 
-            // A dragged card follows the pointer, leaving its place in the order empty.
-            let y = match drag {
-                Some((dragged, at)) if dragged == id => at.clamp(
-                    band.loc.y,
-                    (band.loc.y + band.size.h - size.h).max(band.loc.y),
-                ),
-                _ => next,
+            // In a stack, a card shows only its bottom, below the one in front of it.
+            let (mut y, bottom) = if tucked {
+                let bottom = prev_bottom + peek(size.h);
+                (bottom - size.h, bottom)
+            } else {
+                let y = if depth == 0 { next } else { prev_bottom + GAP };
+                (y, y + size.h)
             };
+            let mut hit = if tucked {
+                Rectangle::new(
+                    Point::from((x, prev_bottom)),
+                    Size::from((size.w, bottom - prev_bottom)),
+                )
+            } else {
+                Rectangle::new(Point::from((x, y)), size)
+            };
+            prev_bottom = bottom;
 
-            let card = Rectangle::new(Point::from((x, y)), size);
-            next += size.h + GAP;
-            Slot {
-                id,
-                card,
-                hit: card,
+            // A dragged card follows the pointer, leaving its place in the order empty.
+            let mut is_tucked = tucked;
+            if let Some((dragged, at)) = drag {
+                if dragged == id {
+                    y = at.clamp(
+                        band.loc.y,
+                        (band.loc.y + band.size.h - size.h).max(band.loc.y),
+                    );
+                    hit = Rectangle::new(Point::from((x, y)), size);
+                    is_tucked = false;
+                }
             }
-        })
-        .collect()
+
+            slots.push(Slot {
+                id,
+                card: Rectangle::new(Point::from((x, y)), size),
+                hit,
+                stack: if is_stacked && depth == 0 {
+                    group.len()
+                } else {
+                    0
+                },
+                tucked: is_tucked,
+            });
+        }
+        next = prev_bottom + GAP;
+    }
+    slots
 }
 
 fn slots(
@@ -879,7 +994,13 @@ fn slots(
             let hit = edge_side.intersection(output).unwrap_or_default();
 
             next += along(size) + GAP;
-            Slot { id, card, hit }
+            Slot {
+                id,
+                card,
+                hit,
+                stack: 0,
+                tucked: false,
+            }
         })
         .collect()
 }
@@ -928,6 +1049,7 @@ mod tests {
                 id: *id,
                 size: Size::from((800., 600.)),
                 urgent: false,
+                group: id.get(),
             })
             .collect()
     }
@@ -1392,7 +1514,7 @@ mod tests {
     fn strip_cards_keep_their_padding() {
         let band = Rectangle::new(Point::from((1704., 40.)), Size::from((STRIP_WIDTH, 1040.)));
         let ids = ids(2);
-        let slots = strip_slots(band, &items(&ids), 0, None);
+        let slots = strip_slots(band, &items(&ids), 0, None, None);
 
         // As wide as the band minus the padding on both sides, starting the padding down.
         let card = slots[0].card;
@@ -1406,7 +1528,7 @@ mod tests {
     fn strip_cards_shrink_to_fit_the_padded_band() {
         let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 400.)));
         let ids = ids(4);
-        let slots = strip_slots(band, &items(&ids), 0, None);
+        let slots = strip_slots(band, &items(&ids), 0, None, None);
         let last = slots.last().unwrap().card;
         assert!(last.loc.y + last.size.h <= band.size.h - STRIP_PADDING + 0.001);
     }
@@ -1420,5 +1542,78 @@ mod tests {
         assert_eq!(panel.loc, Point::from((1704., -rim)));
         assert_eq!(panel.loc.x + panel.size.w, 1920. + rim);
         assert_eq!(panel.loc.y + panel.size.h, 1080. + rim);
+    }
+
+    /// Items for these windows, all of the same app but the last.
+    fn same_app_items(ids: &[MappedId]) -> Vec<Item> {
+        let mut items = items(ids);
+        let last = items.len() - 1;
+        for (i, item) in items.iter_mut().enumerate() {
+            item.group = if i == last { 2 } else { 1 };
+        }
+        items
+    }
+
+    #[test]
+    fn cards_of_one_app_stack() {
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let ids = ids(4);
+        let slots = strip_slots(band, &same_app_items(&ids), 0, None, None);
+
+        // The front card shows whole, with the count of the stack.
+        let front = slots[0];
+        assert_eq!(front.stack, 3);
+        assert!(!front.tucked);
+        assert_eq!(front.hit, front.card);
+
+        // The others tuck behind it, smaller, showing only their bottom.
+        let tucked = slots[1];
+        assert!(tucked.tucked);
+        assert!(tucked.card.size.w < front.card.size.w);
+        assert_eq!(tucked.hit.loc.y, front.card.loc.y + front.card.size.h);
+        let shown = tucked.hit.size.h;
+        let peek = (tucked.card.size.h * STACK_PEEK).max(STACK_MIN_PEEK);
+        assert!((shown - peek).abs() < 1e-6);
+        let bottom = tucked.card.loc.y + tucked.card.size.h;
+        assert!((bottom - (tucked.hit.loc.y + shown)).abs() < 1e-6);
+        assert!(slots[2].tucked);
+
+        // The other app's card comes after the stack, on its own.
+        let other = slots[3];
+        assert_eq!(other.stack, 0);
+        assert!(!other.tucked);
+        assert_eq!(
+            other.card.loc.y,
+            slots[2].card.loc.y + slots[2].card.size.h + GAP
+        );
+    }
+
+    #[test]
+    fn hovering_a_stack_spreads_it() {
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let ids = ids(3);
+        let items = same_app_items(&ids);
+        let slots = strip_slots(band, &items, 0, None, Some(ids[1]));
+        assert!(slots.iter().all(|slot| !slot.tucked && slot.stack == 0));
+        assert_eq!(
+            slots[1].card.loc.y,
+            slots[0].card.loc.y + slots[0].card.size.h + GAP
+        );
+    }
+
+    #[test]
+    fn stacks_keep_the_order_of_their_newest_window() {
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let ids = ids(3);
+        let mut items = items(&ids);
+        // Newest first: app A, app B, app A again.
+        items[0].group = 1;
+        items[1].group = 2;
+        items[2].group = 1;
+        let order: Vec<_> = strip_slots(band, &items, 0, None, None)
+            .iter()
+            .map(|slot| slot.id)
+            .collect();
+        assert_eq!(order, [ids[0], ids[2], ids[1]]);
     }
 }

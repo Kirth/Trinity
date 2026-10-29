@@ -68,14 +68,22 @@ pub struct Item {
     pub size: Size<f64, Logical>,
     /// Whether the window wants attention.
     pub urgent: bool,
+    /// Which app the window belongs to, to stack the cards of one app together.
+    pub group: u64,
 }
 
 impl Item {
     pub fn new(mapped: &Mapped) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+
+        let app_id = with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone());
+        let mut hasher = std::hash::DefaultHasher::new();
+        app_id.hash(&mut hasher);
         Self {
             id: mapped.id(),
             size: window_size(mapped),
             urgent: crate::layout::LayoutElement::is_urgent(mapped),
+            group: hasher.finish(),
         }
     }
 }
@@ -89,6 +97,10 @@ pub struct Slot {
     /// Where the pointer counts as being on the card: the card and the gap between it and the
     /// edge, on the output.
     pub hit: Rectangle<f64, Logical>,
+    /// On the front card of a stack of cards of one app: how many there are.
+    pub stack: usize,
+    /// Whether the card is tucked behind another in a stack, showing only its bottom.
+    pub tucked: bool,
 }
 
 niri_render_elements! {
@@ -201,6 +213,7 @@ impl CardDecorations {
         renderer: &mut R,
         text: &str,
         card: Rectangle<f64, Logical>,
+        bottom: bool,
         scale: f64,
         opacity: f32,
     ) -> Option<PrimaryGpuTextureRenderElement> {
@@ -211,7 +224,11 @@ impl CardDecorations {
         })?;
         let texture =
             TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
-        let loc = badge_loc(card, texture.logical_size());
+        let size = texture.logical_size();
+        let mut loc = badge_loc(card, size);
+        if bottom {
+            loc.y = card.loc.y + card.size.h - BADGE_INSET - size.h;
+        }
         let loc = loc.to_physical_precise_round(scale).to_logical(scale);
         let elem = TextureRenderElement::from_texture_buffer(
             texture,
