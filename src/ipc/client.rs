@@ -484,6 +484,14 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
                     Event::WindowUrgencyChanged { id, urgent } => {
                         println!("Window {id}: urgency changed to {urgent}");
                     }
+                    Event::WindowCardChanged { id, card } => match card {
+                        Some(card) if card.visible => println!("Window {id}: card shown"),
+                        Some(_) => println!("Window {id}: card hidden"),
+                        None => println!("Window {id}: out of the strip"),
+                    },
+                    Event::WindowAnnotationsChanged { id, annotations } => {
+                        println!("Window {id}: annotations changed to {annotations:?}");
+                    }
                     Event::WindowLayoutsChanged { changes } => {
                         println!("Window layouts changed: {changes:?}");
                     }

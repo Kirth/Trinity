@@ -1,7 +1,9 @@
 use std::cell::{Cell, Ref, RefCell};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use niri_config::{Color, Config, CornerRadius, GradientInterpolation, WindowRule};
+use niri_ipc::Annotation;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -193,7 +195,18 @@ pub struct Mapped {
 
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
+
+    /// What providers want shown on the window's card, by provider source, with the generation
+    /// of each, to tell whether it was set again before its time to live ran out.
+    annotations: BTreeMap<String, (Annotation, u64)>,
 }
+
+/// Longest badge on a card, in characters.
+const MAX_BADGE_CHARS: usize = 16;
+/// Longest annotation text, in characters.
+const MAX_ANNOTATION_TEXT_CHARS: usize = 120;
+/// Most providers that can annotate one window.
+const MAX_ANNOTATION_SOURCES: usize = 8;
 
 niri_render_elements! {
     WindowCastRenderElements<R> => {
@@ -308,6 +321,7 @@ impl Mapped {
             is_pending_maximized: false,
             uncommitted_maximized: Vec::new(),
             focus_timestamp: None,
+            annotations: BTreeMap::new(),
         };
 
         rv.is_maximized = rv.sizing_mode().is_maximized();
@@ -555,6 +569,72 @@ impl Mapped {
             XrayPos::default(),
             &mut |elem| push(use_border(elem)),
         );
+    }
+
+    /// What providers want shown on the window's card, by provider source.
+    pub fn annotations(&self) -> impl Iterator<Item = (&String, &Annotation)> + '_ {
+        self.annotations.iter().map(|(source, (a, _))| (source, a))
+    }
+
+    /// The annotations as IPC shows them.
+    pub fn ipc_annotations(&self) -> BTreeMap<String, Annotation> {
+        self.annotations()
+            .map(|(source, a)| (source.clone(), a.clone()))
+            .collect()
+    }
+
+    /// Sets what a provider wants shown on the card, cut down to size. Returns the generation to
+    /// clear it with later and whether it changed, or `None` if there's no room for another
+    /// provider.
+    pub fn set_annotation(
+        &mut self,
+        source: &str,
+        mut annotation: Annotation,
+    ) -> Option<(u64, bool)> {
+        if !self.annotations.contains_key(source)
+            && self.annotations.len() >= MAX_ANNOTATION_SOURCES
+        {
+            return None;
+        }
+
+        let cut = |text: &mut Option<String>, max: usize| {
+            if let Some(t) = text {
+                *t = t.trim().chars().take(max).collect();
+                if t.is_empty() {
+                    *text = None;
+                }
+            }
+        };
+        cut(&mut annotation.badge, MAX_BADGE_CHARS);
+        cut(&mut annotation.text, MAX_ANNOTATION_TEXT_CHARS);
+        annotation.progress = annotation
+            .progress
+            .filter(|p| p.is_finite())
+            .map(|p| p.clamp(0., 1.));
+
+        let old = self.annotations.get(source);
+        let changed = old.is_none_or(|(a, _)| *a != annotation);
+        let generation = old.map_or(0, |(_, g)| g + 1);
+        self.annotations
+            .insert(source.to_owned(), (annotation, generation));
+        Some((generation, changed))
+    }
+
+    /// Clears what a provider set, or every provider's annotations. With a generation, only if it
+    /// wasn't set again since. Returns whether anything changed.
+    pub fn clear_annotations(&mut self, source: Option<&str>, generation: Option<u64>) -> bool {
+        let Some(source) = source else {
+            let changed = !self.annotations.is_empty();
+            self.annotations.clear();
+            return changed;
+        };
+        match self.annotations.get(source) {
+            Some((_, g)) if generation.is_none_or(|generation| generation == *g) => {
+                self.annotations.remove(source);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn get_focus_timestamp(&self) -> Option<Duration> {

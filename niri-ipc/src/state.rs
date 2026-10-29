@@ -224,6 +224,16 @@ impl EventStreamStatePart for WindowsState {
                     }
                 }
             }
+            Event::WindowCardChanged { id, card } => {
+                if let Some(win) = self.windows.get_mut(&id) {
+                    win.card = card;
+                }
+            }
+            Event::WindowAnnotationsChanged { id, annotations } => {
+                if let Some(win) = self.windows.get_mut(&id) {
+                    win.annotations = annotations;
+                }
+            }
             Event::WindowLayoutsChanged { changes } => {
                 for (id, update) in changes {
                     let win = self.windows.get_mut(&id);

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -517,6 +517,7 @@ fn make_ipc_window(
     mapped: &Mapped,
     workspace_id: Option<WorkspaceId>,
     layout: WindowLayout,
+    card: Option<niri_ipc::WindowCard>,
 ) -> niri_ipc::Window {
     with_toplevel_role(mapped.toplevel(), |role| niri_ipc::Window {
         id: mapped.id().get(),
@@ -529,6 +530,8 @@ fn make_ipc_window(
         is_urgent: mapped.is_urgent(),
         layout,
         focus_timestamp: mapped.get_focus_timestamp().map(Timestamp::from),
+        card,
+        annotations: mapped.ipc_annotations(),
     })
 }
 
@@ -698,6 +701,11 @@ impl State {
 
         let mut events = Vec::new();
         let layout = &self.niri.layout;
+        let cards: HashMap<u64, niri_ipc::WindowCard> = layout
+            .window_cards()
+            .into_iter()
+            .map(|(mapped, card)| (mapped.id().get(), card))
+            .collect();
 
         let mut batch_change_layouts: Vec<(u64, WindowLayout)> = Vec::new();
 
@@ -713,7 +721,7 @@ impl State {
             }
 
             let Some(ipc_win) = state.windows.get(&id) else {
-                let window = make_ipc_window(mapped, ws_id, window_layout);
+                let window = make_ipc_window(mapped, ws_id, window_layout, cards.get(&id).copied());
                 events.push(Event::WindowOpenedOrChanged { window });
                 return;
             };
@@ -727,7 +735,7 @@ impl State {
             });
 
             if changed {
-                let window = make_ipc_window(mapped, ws_id, window_layout);
+                let window = make_ipc_window(mapped, ws_id, window_layout, cards.get(&id).copied());
                 events.push(Event::WindowOpenedOrChanged { window });
                 return;
             }
@@ -751,6 +759,16 @@ impl State {
             let urgent = mapped.is_urgent();
             if urgent != ipc_win.is_urgent {
                 events.push(Event::WindowUrgencyChanged { id, urgent })
+            }
+
+            let card = cards.get(&id).copied();
+            if card != ipc_win.card {
+                events.push(Event::WindowCardChanged { id, card });
+            }
+
+            let annotations = mapped.ipc_annotations();
+            if annotations != ipc_win.annotations {
+                events.push(Event::WindowAnnotationsChanged { id, annotations });
             }
         });
 

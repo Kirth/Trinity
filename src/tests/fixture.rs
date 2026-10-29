@@ -60,6 +60,11 @@ impl Fixture {
             .unwrap();
     }
 
+    /// Runs niri's own event loop once, for its timers, which the fixture's loop doesn't see.
+    pub fn dispatch_server(&mut self) {
+        self.state.server.dispatch();
+    }
+
     pub fn niri_state(&mut self) -> &mut crate::niri::State {
         &mut self.state.server.state
     }

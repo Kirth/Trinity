@@ -225,6 +225,18 @@ pub enum Action {
     PullFromLimbo,
     SwapWithStrip(#[knuffel(argument)] usize),
     CycleStrip,
+    #[knuffel(skip)]
+    AnnotateWindow {
+        id: Option<u64>,
+        source: String,
+        annotation: niri_ipc::Annotation,
+        ttl_ms: Option<u64>,
+    },
+    #[knuffel(skip)]
+    ClearAnnotations {
+        id: Option<u64>,
+        source: Option<String>,
+    },
     ToggleLimboWindow,
     #[knuffel(skip)]
     ToggleLimboWindowById(u64),
@@ -541,6 +553,28 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::PullFromLimbo {} => Self::PullFromLimbo,
             niri_ipc::Action::SwapWithStrip { index } => Self::SwapWithStrip(index),
             niri_ipc::Action::CycleStrip {} => Self::CycleStrip,
+            niri_ipc::Action::AnnotateWindow {
+                id,
+                source,
+                badge,
+                status,
+                text,
+                progress,
+                ttl_ms,
+            } => Self::AnnotateWindow {
+                id,
+                source,
+                annotation: niri_ipc::Annotation {
+                    badge,
+                    status,
+                    text,
+                    progress,
+                },
+                ttl_ms,
+            },
+            niri_ipc::Action::ClearAnnotations { id, source } => {
+                Self::ClearAnnotations { id, source }
+            }
             niri_ipc::Action::ToggleLimboWindow { id: None } => Self::ToggleLimboWindow,
             niri_ipc::Action::ToggleLimboWindow { id: Some(id) } => Self::ToggleLimboWindowById(id),
             niri_ipc::Action::CenterColumn {} => Self::CenterColumn,

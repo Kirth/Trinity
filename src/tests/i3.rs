@@ -1525,3 +1525,152 @@ fn strip_windows_get_the_full_size() {
         @"size: 1672 × 1048, bounds: 1888 × 1048, states: []"
     );
 }
+
+fn annotations_of(
+    f: &mut Fixture,
+    id: crate::window::mapped::MappedId,
+) -> std::collections::BTreeMap<String, niri_ipc::Annotation> {
+    let layout = &f.niri().layout;
+    let (_, mapped) = layout.windows().find(|(_, m)| m.id() == id).unwrap();
+    mapped.ipc_annotations()
+}
+
+fn annotate(
+    f: &mut Fixture,
+    id: crate::window::mapped::MappedId,
+    source: &str,
+    annotation: niri_ipc::Annotation,
+    ttl_ms: Option<u64>,
+) {
+    f.niri_state().do_action(
+        niri_config::Action::AnnotateWindow {
+            id: Some(id.get()),
+            source: source.to_owned(),
+            annotation,
+            ttl_ms,
+        },
+        false,
+    );
+}
+
+#[test]
+fn providers_annotate_windows() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+
+    let tabs = niri_ipc::Annotation {
+        badge: Some(String::from("12 tabs")),
+        ..Default::default()
+    };
+    annotate(&mut f, ids[0], "chromium", tabs.clone(), None);
+    let waiting = niri_ipc::Annotation {
+        status: Some(niri_ipc::CardStatus::Waiting),
+        // Cut down to size, and kept in range.
+        text: Some("x".repeat(500)),
+        progress: Some(7.),
+        ..Default::default()
+    };
+    annotate(&mut f, ids[0], "claude", waiting, None);
+
+    let annotations = annotations_of(&mut f, ids[0]);
+    assert_eq!(annotations["chromium"], tabs);
+    assert_eq!(annotations["claude"].text.as_ref().unwrap().len(), 120);
+    assert_eq!(annotations["claude"].progress, Some(1.));
+
+    // Clearing one source keeps the others.
+    f.niri_state().do_action(
+        niri_config::Action::ClearAnnotations {
+            id: Some(ids[0].get()),
+            source: Some(String::from("claude")),
+        },
+        false,
+    );
+    let annotations = annotations_of(&mut f, ids[0]);
+    assert_eq!(annotations.keys().collect::<Vec<_>>(), ["chromium"]);
+
+    // Without a source, everything goes.
+    f.niri_state().do_action(
+        niri_config::Action::ClearAnnotations {
+            id: None,
+            source: None,
+        },
+        false,
+    );
+    assert!(annotations_of(&mut f, ids[0]).is_empty());
+}
+
+#[test]
+fn annotations_expire_unless_set_again() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    let badge = |text: &str| niri_ipc::Annotation {
+        badge: Some(text.to_owned()),
+        ..Default::default()
+    };
+
+    annotate(&mut f, ids[0], "test", badge("1"), Some(0));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.dispatch_server();
+    assert!(annotations_of(&mut f, ids[0]).is_empty());
+
+    // Set again before the first one runs out: the newer one stays.
+    annotate(&mut f, ids[0], "test", badge("1"), Some(0));
+    annotate(&mut f, ids[0], "test", badge("2"), None);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.dispatch_server();
+    assert_eq!(
+        annotations_of(&mut f, ids[0])["test"].badge.as_deref(),
+        Some("2")
+    );
+}
+
+#[test]
+fn too_many_sources_are_turned_away() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    for n in 0..10 {
+        annotate(&mut f, ids[0], &format!("p{n}"), Default::default(), None);
+    }
+    assert_eq!(annotations_of(&mut f, ids[0]).len(), 8);
+}
+
+#[test]
+fn window_cards_follow_the_strip() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    let cards = |f: &mut Fixture| -> Vec<(crate::window::mapped::MappedId, bool)> {
+        f.niri()
+            .layout
+            .window_cards()
+            .into_iter()
+            .map(|(m, card)| (m.id(), card.visible))
+            .collect()
+    };
+    assert!(cards(&mut f).is_empty());
+
+    poof(&mut f, 1000);
+    assert_eq!(cards(&mut f), [(ids[1], true)]);
+
+    // On another workspace, the card is hidden, until the overview shows it.
+    f.niri_state().do_action(
+        niri_config::Action::FocusWorkspace(niri_config::WorkspaceReference::Index(2)),
+        false,
+    );
+    assert_eq!(cards(&mut f), [(ids[1], false)]);
+    f.niri_state()
+        .do_action(niri_config::Action::OpenOverview, false);
+    assert_eq!(cards(&mut f), [(ids[1], true)]);
+}

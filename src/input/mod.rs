@@ -1069,6 +1069,66 @@ impl State {
         self.maybe_warp_cursor_to_focus();
     }
 
+    /// Runs this on the window with this id, or the focused window.
+    fn with_mapped_mut<T>(
+        &mut self,
+        id: Option<u64>,
+        f: impl FnOnce(&mut crate::window::Mapped) -> T,
+    ) -> Option<T> {
+        let id = match id {
+            Some(id) => id,
+            None => self.niri.layout.focus()?.id().get(),
+        };
+        let mut f = Some(f);
+        let mut rv = None;
+        self.niri.layout.with_windows_mut(|mapped, _| {
+            if mapped.id().get() == id {
+                if let Some(f) = f.take() {
+                    rv = Some(f(mapped));
+                }
+            }
+        });
+        rv
+    }
+
+    /// Sets what a provider wants shown on a window's card, clearing it after `ttl_ms` unless
+    /// it's set again before then.
+    fn annotate_window(
+        &mut self,
+        id: Option<u64>,
+        source: String,
+        annotation: niri_ipc::Annotation,
+        ttl_ms: Option<u64>,
+    ) {
+        let Some(id) = id.or_else(|| self.niri.layout.focus().map(|m| m.id().get())) else {
+            return;
+        };
+        let Some(Some((generation, changed))) = self.with_mapped_mut(Some(id), |mapped| {
+            mapped.set_annotation(&source, annotation)
+        }) else {
+            return;
+        };
+        if changed {
+            self.niri.queue_redraw_all();
+        }
+
+        if let Some(ttl_ms) = ttl_ms {
+            let timer = Timer::from_duration(Duration::from_millis(ttl_ms));
+            let _ = self
+                .niri
+                .event_loop
+                .insert_source(timer, move |_, _, state| {
+                    let cleared = state.with_mapped_mut(Some(id), |mapped| {
+                        mapped.clear_annotations(Some(&source), Some(generation))
+                    });
+                    if cleared == Some(true) {
+                        state.niri.queue_redraw_all();
+                    }
+                    TimeoutAction::Drop
+                });
+        }
+    }
+
     /// The window with this id, in limbo or not.
     fn window_by_id(&self, id: u64) -> Option<smithay::desktop::Window> {
         self.niri
@@ -2219,6 +2279,22 @@ impl State {
             }
             Action::CycleStrip => {
                 self.swap_with_strip(|len| len.checked_sub(1));
+            }
+            Action::AnnotateWindow {
+                id,
+                source,
+                annotation,
+                ttl_ms,
+            } => {
+                self.annotate_window(id, source, annotation, ttl_ms);
+            }
+            Action::ClearAnnotations { id, source } => {
+                let changed = self.with_mapped_mut(id, |mapped| {
+                    mapped.clear_annotations(source.as_deref(), None)
+                });
+                if changed == Some(true) {
+                    self.niri.queue_redraw_all();
+                }
             }
             Action::ToggleLimboWindow => {
                 // Like i3's scratchpad show: hide the window last brought out of limbo if it's

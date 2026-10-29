@@ -52,7 +52,7 @@
 //! - `clap`: derives the clap CLI parsing traits for some types. Used internally by niri itself.
 #![warn(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -487,6 +487,53 @@ pub enum Action {
     },
     /// Bring the newest window in limbo back next to the focused window (i3 layout mode).
     PullFromLimbo {},
+    /// Set what a provider wants shown on a window's card in the strip.
+    ///
+    /// Replaces what the same source set before; other sources keep theirs.
+    #[cfg_attr(
+        feature = "clap",
+        clap(about = "Annotate a window's card in the strip")
+    )]
+    AnnotateWindow {
+        /// Id of the window to annotate.
+        ///
+        /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+        /// Name of the provider, so that several can annotate the same window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        source: String,
+        /// Short text in the corner of the card, like a count.
+        #[cfg_attr(feature = "clap", arg(long))]
+        badge: Option<String>,
+        /// State of the window, shown as the colour of the card's outline.
+        #[cfg_attr(feature = "clap", arg(long, value_enum))]
+        status: Option<CardStatus>,
+        /// A line of text shown with the window's title.
+        #[cfg_attr(feature = "clap", arg(long))]
+        text: Option<String>,
+        /// Progress from 0 to 1, shown as a bar along the bottom of the card.
+        #[cfg_attr(feature = "clap", arg(long))]
+        progress: Option<f64>,
+        /// Clear the annotation after this many milliseconds, unless it's set again.
+        #[cfg_attr(feature = "clap", arg(long))]
+        ttl_ms: Option<u64>,
+    },
+    /// Clear what providers want shown on a window's card.
+    #[cfg_attr(
+        feature = "clap",
+        clap(about = "Clear the annotations of a window's card")
+    )]
+    ClearAnnotations {
+        /// Id of the window.
+        ///
+        /// If `None`, uses the focused window.
+        #[cfg_attr(feature = "clap", arg(long))]
+        id: Option<u64>,
+        /// Only clear what this provider set.
+        #[cfg_attr(feature = "clap", arg(long))]
+        source: Option<String>,
+    },
     /// Swap a window in the strip of the focused workspace with the focused window (i3 layout
     /// mode).
     SwapWithStrip {
@@ -1485,6 +1532,49 @@ pub struct Window {
     ///
     /// The timestamp comes from the monotonic clock.
     pub focus_timestamp: Option<Timestamp>,
+    /// The window's card in the strip of its workspace, if it's there (i3 layout mode).
+    #[serde(default)]
+    pub card: Option<WindowCard>,
+    /// What providers want shown on the window's card, by provider source.
+    #[serde(default)]
+    pub annotations: BTreeMap<String, Annotation>,
+}
+
+/// A window's card in the strip of its workspace.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct WindowCard {
+    /// Whether the card is on screen: in the strip of an active workspace, or in the overview.
+    pub visible: bool,
+}
+
+/// What a provider wants shown on a window's card.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct Annotation {
+    /// Short text in the corner of the card, like a count.
+    pub badge: Option<String>,
+    /// State of the window, shown as the colour of the card's outline.
+    pub status: Option<CardStatus>,
+    /// A line of text shown with the window's title.
+    pub text: Option<String>,
+    /// Progress from 0 to 1, shown as a bar along the bottom of the card.
+    pub progress: Option<f64>,
+}
+
+/// State of a window, as a provider sees it.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum CardStatus {
+    /// Finished, nothing to do.
+    Done,
+    /// Busy with something.
+    Working,
+    /// Needs you.
+    Waiting,
+    /// Something went wrong.
+    Error,
 }
 
 /// A moment in time.
@@ -1806,6 +1896,20 @@ pub enum Event {
         id: u64,
         /// The new urgency state of the window.
         urgent: bool,
+    },
+    /// A window went into or out of the strip of its workspace, or its card was shown or hidden.
+    WindowCardChanged {
+        /// Id of the window.
+        id: u64,
+        /// The window's card, if it's in a strip.
+        card: Option<WindowCard>,
+    },
+    /// What providers want shown on a window's card changed.
+    WindowAnnotationsChanged {
+        /// Id of the window.
+        id: u64,
+        /// The new annotations, by provider source.
+        annotations: BTreeMap<String, Annotation>,
     },
     /// The layout of one or more windows has changed.
     WindowLayoutsChanged {
@@ -2257,6 +2361,59 @@ impl OutputAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_without_cards_still_parse() {
+        // As sent by a niri from before cards and annotations.
+        let json = r#"{"id":1,"title":null,"app_id":null,"pid":null,"workspace_id":null,
+            "is_focused":false,"is_floating":false,"is_urgent":false,
+            "layout":{"pos_in_scrolling_layout":null,"tile_size":[1.0,1.0],
+            "window_size":[1,1],"tile_pos_in_workspace_view":null,
+            "window_offset_in_tile":[0.0,0.0]},"focus_timestamp":null}"#;
+        let window: Window = serde_json::from_str(json).unwrap();
+        assert_eq!(window.card, None);
+        assert!(window.annotations.is_empty());
+    }
+
+    #[test]
+    fn card_events_update_the_state() {
+        use crate::state::{EventStreamState, EventStreamStatePart as _};
+
+        let json = r#"{"id":1,"title":null,"app_id":null,"pid":null,"workspace_id":null,
+            "is_focused":false,"is_floating":false,"is_urgent":false,
+            "layout":{"pos_in_scrolling_layout":null,"tile_size":[1.0,1.0],
+            "window_size":[1,1],"tile_pos_in_workspace_view":null,
+            "window_offset_in_tile":[0.0,0.0]},"focus_timestamp":null}"#;
+        let window: Window = serde_json::from_str(json).unwrap();
+        let mut state = EventStreamState::default();
+        state.apply(Event::WindowsChanged {
+            windows: vec![window],
+        });
+
+        state.apply(Event::WindowCardChanged {
+            id: 1,
+            card: Some(WindowCard { visible: true }),
+        });
+        let annotation = Annotation {
+            badge: Some(String::from("12 tabs")),
+            status: Some(CardStatus::Waiting),
+            ..Default::default()
+        };
+        state.apply(Event::WindowAnnotationsChanged {
+            id: 1,
+            annotations: BTreeMap::from([(String::from("chromium"), annotation.clone())]),
+        });
+
+        let window = &state.windows.windows[&1];
+        assert_eq!(window.card, Some(WindowCard { visible: true }));
+        assert_eq!(window.annotations["chromium"], annotation);
+
+        // And they survive a round trip through JSON.
+        let json = serde_json::to_string(window).unwrap();
+        let back: Window = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.annotations["chromium"], annotation);
+        assert_eq!(back.card, window.card);
+    }
 
     #[test]
     fn parse_size_change() {

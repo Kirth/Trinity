@@ -5786,6 +5786,21 @@ impl<W: LayoutElement> Layout<W> {
             .flat_map(|ws| ws.strip_tiles_mut().map(Tile::window_mut))
     }
 
+    /// The cards of the windows in strips: shown if their workspace is active on its output, or
+    /// in the overview.
+    pub fn window_cards(&self) -> Vec<(&W, niri_ipc::WindowCard)> {
+        let overview = self.is_overview_open();
+        let mut cards = Vec::new();
+        for (mon, _, ws) in self.workspaces() {
+            let visible =
+                overview || mon.is_some_and(|mon| mon.active_workspace_ref().id() == ws.id());
+            for win in ws.strip_windows() {
+                cards.push((win, niri_ipc::WindowCard { visible }));
+            }
+        }
+        cards
+    }
+
     /// Where the strip of the active workspace on this output shows, in output-local
     /// coordinates, while it has windows.
     pub fn strip_area(&self, output: &Output) -> Option<Rectangle<f64, Logical>> {
