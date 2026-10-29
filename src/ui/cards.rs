@@ -97,6 +97,8 @@ pub struct Slot {
     /// Where the pointer counts as being on the card: the card and the gap between it and the
     /// edge, on the output.
     pub hit: Rectangle<f64, Logical>,
+    /// Which app the card's window belongs to, as in [`Item::group`].
+    pub group: u64,
     /// On the front card of a stack of cards of one app: how many there are.
     pub stack: usize,
     /// Whether the card is tucked behind another in a stack, showing only its bottom.

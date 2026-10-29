@@ -59,6 +59,8 @@ const STACK_PEEK: f64 = 0.35;
 const STACK_MIN_PEEK: f64 = 24.;
 /// How much smaller each card further back in a stack is, as a share of its size.
 const STACK_SHRINK: f64 = 0.04;
+/// How long a stack takes to spread out or fold back.
+const SPREAD: Duration = Duration::from_millis(180);
 /// Width of the rim around the panel behind a strip, in logical pixels.
 const PANEL_RIM: f32 = 1.;
 
@@ -117,6 +119,10 @@ pub struct Drawer {
     edge_since: Option<(Output, Duration)>,
     /// The output where pushing against the edge slid out all the cards.
     revealed: Option<Output>,
+    /// The stack of cards spread out on an output, by app.
+    spread: Option<(Output, u64)>,
+    /// How far each stack has spread out on each output, from 0 to 1.
+    spread_progress: HashMap<(Output, u64), f64>,
 }
 
 impl Drawer {
@@ -285,7 +291,7 @@ impl Drawer {
                 items,
                 self.offset,
                 self.dragging_on(output),
-                self.hovered_on(output),
+                |group| self.spread_of(output, group),
             );
         }
         slots(
@@ -324,6 +330,31 @@ impl Drawer {
             .map(|slot| slot.id)
     }
 
+    /// Spreads out a stack of cards on an output, or lets it fold back. Returns whether it
+    /// changed.
+    pub fn set_spread(&mut self, new: Option<(Output, u64)>) -> bool {
+        if self.spread == new {
+            return false;
+        }
+        self.spread = new;
+        true
+    }
+
+    /// The stack spread out on this output.
+    pub fn spread_on(&self, output: &Output) -> Option<u64> {
+        self.spread
+            .as_ref()
+            .filter(|(o, _)| o == output)
+            .map(|(_, group)| *group)
+    }
+
+    fn spread_of(&self, output: &Output, group: u64) -> f64 {
+        self.spread_progress
+            .get(&(output.clone(), group))
+            .copied()
+            .unwrap_or(0.)
+    }
+
     /// Advances the slides of the cards on these outputs.
     pub fn advance_animations(&mut self, now: Duration, outputs: &[Output]) {
         let dt = self
@@ -331,6 +362,23 @@ impl Drawer {
             .map_or(Duration::ZERO, |last| now.saturating_sub(last));
         self.last_tick = Some(now);
         let step = dt.as_secs_f64() / SLIDE.as_secs_f64();
+
+        // Stacks spread out and fold back.
+        if let Some(key) = &self.spread {
+            self.spread_progress.entry(key.clone()).or_insert(0.);
+        }
+        let spread_step = dt.as_secs_f64() / SPREAD.as_secs_f64();
+        for (key, progress) in &mut self.spread_progress {
+            if self.spread.as_ref() == Some(key) {
+                *progress = (*progress + spread_step).min(1.);
+            } else {
+                *progress = (*progress - spread_step).max(0.);
+            }
+        }
+        let spread = &self.spread;
+        self.spread_progress.retain(|key, progress| {
+            (*progress > 0. || spread.as_ref() == Some(key)) && outputs.contains(&key.0)
+        });
 
         // Held against the edge long enough: slide all the cards out.
         if let Some((output, since)) = &self.edge_since {
@@ -364,6 +412,21 @@ impl Drawer {
         }
         if !self.outputs.contains(output) {
             return false;
+        }
+        let spreading = self.spread_progress.iter().any(|((o, group), progress)| {
+            o == output
+                && if self.spread_on(output) == Some(*group) {
+                    *progress < 1.
+                } else {
+                    *progress > 0.
+                }
+        });
+        if spreading
+            || (self
+                .spread_on(output)
+                .is_some_and(|g| self.spread_of(output, g) < 1.))
+        {
+            return true;
         }
         self.order.iter().any(|&id| {
             let extend = self.extend_of(output, id);
@@ -715,6 +778,7 @@ fn overview_slots(
                 id,
                 card,
                 hit: card,
+                group: item.group,
                 stack: 0,
                 tucked: false,
             }
@@ -734,13 +798,16 @@ fn panel_rect(area: Rectangle<f64, Logical>, zoom: f64) -> Rectangle<f64, Logica
 
 /// Where the cards go in a workspace strip: in a column from the top of the band, as wide as the
 /// band allows. The cards of one app stack together, like a pile of paper: the newest in front,
-/// the others tucked behind it showing their bottom. Hovering a stack spreads it out.
+/// the others tucked behind it showing their bottom.
+///
+/// A stack spreads out, by how far `spread` says, over the stacks below it rather than pushing
+/// them away, so that nothing else moves.
 fn strip_slots(
     band: Rectangle<f64, Logical>,
     items: &[Item],
     offset: usize,
     drag: Option<(MappedId, f64)>,
-    hovered: Option<MappedId>,
+    spread: impl Fn(u64) -> f64,
 ) -> Vec<Slot> {
     if items.is_empty() {
         return Vec::new();
@@ -751,6 +818,8 @@ fn strip_slots(
     let pad = STRIP_PADDING * zoom;
     let w = (band.size.w - 2. * pad).max(1.);
     let room = (band.size.h - 2. * pad).max(1.);
+    let top = band.loc.y + pad;
+    let bottom_edge = band.loc.y + band.size.h - pad;
 
     // The cards of each app, in the order of their newest window, newest first within.
     let mut groups: Vec<Vec<&Item>> = Vec::new();
@@ -760,13 +829,6 @@ fn strip_slots(
             None => groups.push(vec![item]),
         }
     }
-    // The stack under the pointer, or with a card being dragged, spreads out.
-    let spread = |id: Option<MappedId>| {
-        id.and_then(|id| items.iter().find(|item| item.id == id))
-            .map(|item| item.group)
-    };
-    let spread = [spread(hovered), spread(drag.map(|(id, _)| id))];
-    let stacked = |group: &[&Item]| group.len() > 1 && !spread.contains(&Some(group[0].group));
 
     // Each card is as wide as the band, at most as high as wide; further back in a stack, a bit
     // smaller.
@@ -778,19 +840,11 @@ fn strip_slots(
     };
     let peek = |h: f64| (h * STACK_PEEK).max(STACK_MIN_PEEK * zoom).min(h);
     let group_len = |group: &[&Item], scale: f64| -> f64 {
-        if stacked(group) {
-            let mut len = size_of(group[0], 0, scale).h;
-            for (depth, item) in group.iter().enumerate().skip(1) {
-                len += peek(size_of(item, depth, scale).h);
-            }
-            len
-        } else {
-            group
-                .iter()
-                .map(|item| size_of(item, 0, scale).h)
-                .sum::<f64>()
-                + GAP * (group.len() as f64 - 1.)
+        let mut len = size_of(group[0], 0, scale).h;
+        for (depth, item) in group.iter().enumerate().skip(1) {
+            len += peek(size_of(item, depth, scale).h);
         }
+        len
     };
     let total = |groups: &[&Vec<&Item>], scale: f64| -> f64 {
         groups.iter().map(|g| group_len(g, scale)).sum::<f64>() + GAP * (groups.len() as f64 - 1.)
@@ -834,63 +888,151 @@ fn strip_slots(
         }
     }
 
-    let mut slots = Vec::new();
-    let mut next = band.loc.y + pad;
+    let card_at = |size: Size<f64, Logical>, y: f64| {
+        let x = band.loc.x + (band.size.w - size.w) / 2.;
+        Rectangle::new(Point::from((x, y)), size)
+    };
+
+    let mut spreading = Vec::new();
+    let mut others = Vec::new();
+    let mut next = top;
     for group in shown {
-        let is_stacked = stacked(group);
+        let is_stack = group.len() > 1;
+        let progress = if is_stack {
+            spread(group[0].group).clamp(0., 1.)
+        } else {
+            0.
+        };
+        // Eased out: quick at first, settling gently.
+        let eased = 1. - (1. - progress).powi(3);
+
+        // Folded: the front card whole, the others tucked behind it.
+        let mut folded = Vec::new();
         let mut prev_bottom = next;
         for (depth, item) in group.iter().enumerate() {
-            let id = item.id;
-            let tucked = is_stacked && depth > 0;
-            let size = size_of(item, if is_stacked { depth } else { 0 }, scale);
-            let x = band.loc.x + (band.size.w - size.w) / 2.;
-
-            // In a stack, a card shows only its bottom, below the one in front of it.
-            let (mut y, bottom) = if tucked {
+            let size = size_of(item, depth, scale);
+            if depth == 0 {
+                let card = card_at(size, next);
+                folded.push((card, card));
+                prev_bottom = card.loc.y + size.h;
+            } else {
                 let bottom = prev_bottom + peek(size.h);
-                (bottom - size.h, bottom)
-            } else {
-                let y = if depth == 0 { next } else { prev_bottom + GAP };
-                (y, y + size.h)
-            };
-            let mut hit = if tucked {
-                Rectangle::new(
-                    Point::from((x, prev_bottom)),
+                let card = card_at(size, bottom - size.h);
+                let hit = Rectangle::new(
+                    Point::from((card.loc.x, prev_bottom)),
                     Size::from((size.w, bottom - prev_bottom)),
-                )
+                );
+                folded.push((card, hit));
+                prev_bottom = bottom;
+            }
+        }
+        let folded_bottom = prev_bottom;
+
+        // Spread: every card whole, from the front card down, kept inside the band.
+        let mut spread_cards = Vec::new();
+        if progress > 0. {
+            let sizes: Vec<_> = group.iter().map(|item| size_of(item, 0, scale)).collect();
+            let len =
+                sizes.iter().map(|size| size.h).sum::<f64>() + GAP * (sizes.len() as f64 - 1.);
+            let start = (next - (next + len - bottom_edge).max(0.)).max(top);
+            let mut y = start;
+            for size in &sizes {
+                spread_cards.push(card_at(*size, y));
+                y += size.h + GAP;
+            }
+        }
+
+        let slots = if progress > 0. {
+            &mut spreading
+        } else {
+            &mut others
+        };
+        for (depth, item) in group.iter().enumerate() {
+            let id = item.id;
+            let (folded_card, folded_hit) = folded[depth];
+            let (mut card, mut hit) = if progress > 0. {
+                let card = lerp_rect(folded_card, spread_cards[depth], eased);
+                (card, card)
             } else {
-                Rectangle::new(Point::from((x, y)), size)
+                (folded_card, folded_hit)
             };
-            prev_bottom = bottom;
+            let folded_view = progress < 0.5;
+            let mut tucked = is_stack && depth > 0 && folded_view;
 
             // A dragged card follows the pointer, leaving its place in the order empty.
-            let mut is_tucked = tucked;
             if let Some((dragged, at)) = drag {
                 if dragged == id {
-                    y = at.clamp(
+                    let y = at.clamp(
                         band.loc.y,
-                        (band.loc.y + band.size.h - size.h).max(band.loc.y),
+                        (band.loc.y + band.size.h - card.size.h).max(band.loc.y),
                     );
-                    hit = Rectangle::new(Point::from((x, y)), size);
-                    is_tucked = false;
+                    card.loc.y = y;
+                    hit = card;
+                    tucked = false;
                 }
             }
 
             slots.push(Slot {
                 id,
-                card: Rectangle::new(Point::from((x, y)), size),
+                card,
                 hit,
-                stack: if is_stacked && depth == 0 {
+                group: item.group,
+                stack: if is_stack && depth == 0 && folded_view {
                     group.len()
                 } else {
                     0
                 },
-                tucked: is_tucked,
+                tucked,
             });
         }
-        next = prev_bottom + GAP;
+        next = folded_bottom + GAP;
     }
-    slots
+
+    // Spreading stacks go first, to draw above the others and get the pointer.
+    spreading.extend(others);
+    spreading
+}
+
+/// A rectangle part of the way from one to another.
+fn lerp_rect(
+    from: Rectangle<f64, Logical>,
+    to: Rectangle<f64, Logical>,
+    t: f64,
+) -> Rectangle<f64, Logical> {
+    let lerp = |a: f64, b: f64| a + (b - a) * t;
+    Rectangle::new(
+        Point::from((lerp(from.loc.x, to.loc.x), lerp(from.loc.y, to.loc.y))),
+        Size::from((lerp(from.size.w, to.size.w), lerp(from.size.h, to.size.h))),
+    )
+}
+
+/// Which stack of cards should be spread out, for the pointer at this position: the one spread
+/// out already while the pointer stays on or between its cards, otherwise the stack of the card
+/// under the pointer.
+pub fn spread_target(
+    slots: &[Slot],
+    hovered: Option<MappedId>,
+    current: Option<u64>,
+    pos: Point<f64, Logical>,
+) -> Option<u64> {
+    if let Some(group) = current {
+        let area = slots
+            .iter()
+            .filter(|slot| slot.group == group)
+            .map(|slot| slot.card)
+            .reduce(|a, b| a.merge(b));
+        if let Some(mut area) = area {
+            area.loc -= Point::from((GAP, GAP));
+            area.size += Size::from((GAP * 2., GAP * 2.));
+            if area.contains(pos) {
+                return Some(group);
+            }
+        }
+    }
+
+    let slot = slots.iter().find(|slot| Some(slot.id) == hovered)?;
+    let count = slots.iter().filter(|s| s.group == slot.group).count();
+    (count > 1).then_some(slot.group)
 }
 
 fn slots(
@@ -998,6 +1140,7 @@ fn slots(
                 id,
                 card,
                 hit,
+                group: item.group,
                 stack: 0,
                 tucked: false,
             }
@@ -1514,7 +1657,7 @@ mod tests {
     fn strip_cards_keep_their_padding() {
         let band = Rectangle::new(Point::from((1704., 40.)), Size::from((STRIP_WIDTH, 1040.)));
         let ids = ids(2);
-        let slots = strip_slots(band, &items(&ids), 0, None, None);
+        let slots = strip_slots(band, &items(&ids), 0, None, |_| 0.);
 
         // As wide as the band minus the padding on both sides, starting the padding down.
         let card = slots[0].card;
@@ -1528,7 +1671,7 @@ mod tests {
     fn strip_cards_shrink_to_fit_the_padded_band() {
         let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 400.)));
         let ids = ids(4);
-        let slots = strip_slots(band, &items(&ids), 0, None, None);
+        let slots = strip_slots(band, &items(&ids), 0, None, |_| 0.);
         let last = slots.last().unwrap().card;
         assert!(last.loc.y + last.size.h <= band.size.h - STRIP_PADDING + 0.001);
     }
@@ -1558,7 +1701,7 @@ mod tests {
     fn cards_of_one_app_stack() {
         let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
         let ids = ids(4);
-        let slots = strip_slots(band, &same_app_items(&ids), 0, None, None);
+        let slots = strip_slots(band, &same_app_items(&ids), 0, None, |_| 0.);
 
         // The front card shows whole, with the count of the stack.
         let front = slots[0];
@@ -1589,16 +1732,115 @@ mod tests {
     }
 
     #[test]
-    fn hovering_a_stack_spreads_it() {
+    fn a_spread_stack_lies_over_the_others() {
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let ids = ids(4);
+        let items = same_app_items(&ids);
+        let folded = strip_slots(band, &items, 0, None, |_| 0.);
+        let spread = strip_slots(band, &items, 0, None, |group| f64::from(group == 1));
+
+        // The stack comes first, its cards whole and apart, from where its front card was.
+        assert!(spread[..3]
+            .iter()
+            .all(|slot| slot.group == 1 && !slot.tucked));
+        assert_eq!(spread[0].card, folded[0].card);
+        assert_eq!(spread[1].card.size, spread[0].card.size);
+        assert_eq!(
+            spread[1].card.loc.y,
+            spread[0].card.loc.y + spread[0].card.size.h + GAP
+        );
+        assert_eq!(spread[1].hit, spread[1].card);
+        assert_eq!(spread[0].stack, 0);
+
+        // The other app's card stays where it was, below the spread stack.
+        assert_eq!(spread[3], folded[3]);
+    }
+
+    #[test]
+    fn a_spread_stack_stays_inside_the_band() {
+        // Tall cards: three of them spread out don't fit below the front card.
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 500.)));
+        let ids = ids(3);
+        let mut items = items(&ids);
+        for item in &mut items {
+            item.group = 1;
+        }
+        let spread = strip_slots(band, &items, 0, None, |_| 1.);
+        let bottom = spread
+            .iter()
+            .map(|slot| slot.card.loc.y + slot.card.size.h)
+            .fold(f64::MIN, f64::max);
+        let top = spread
+            .iter()
+            .map(|slot| slot.card.loc.y)
+            .fold(f64::MAX, f64::min);
+        assert!(bottom <= band.size.h - STRIP_PADDING + 0.001 || top <= STRIP_PADDING + 0.001);
+        assert!(top >= STRIP_PADDING - 0.001);
+    }
+
+    #[test]
+    fn spreading_moves_the_cards_part_of_the_way() {
         let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
         let ids = ids(3);
         let items = same_app_items(&ids);
-        let slots = strip_slots(band, &items, 0, None, Some(ids[1]));
-        assert!(slots.iter().all(|slot| !slot.tucked && slot.stack == 0));
+        let folded = strip_slots(band, &items, 0, None, |_| 0.);
+        let half = strip_slots(band, &items, 0, None, |group| 0.5 * f64::from(group == 1));
+        let spread = strip_slots(band, &items, 0, None, |group| f64::from(group == 1));
+        let y = |slots: &[Slot]| slots[1].card.loc.y;
+        assert!(y(&folded) < y(&half) && y(&half) < y(&spread));
+    }
+
+    #[test]
+    fn the_pointer_keeps_a_stack_spread_between_its_cards() {
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let ids = ids(4);
+        let items = same_app_items(&ids);
+        let folded = strip_slots(band, &items, 0, None, |_| 0.);
+
+        // Hovering a card of a stack spreads it; a lone card spreads nothing.
+        let on = |slot: &Slot| slot.card.loc + slot.card.size.downscale(2.).to_point();
         assert_eq!(
-            slots[1].card.loc.y,
-            slots[0].card.loc.y + slots[0].card.size.h + GAP
+            spread_target(&folded, Some(ids[1]), None, on(&folded[1])),
+            Some(1)
         );
+        assert_eq!(
+            spread_target(&folded, Some(ids[3]), None, on(&folded[3])),
+            None
+        );
+
+        // In the gap between two spread cards, it stays spread, even over another card.
+        let spread = strip_slots(band, &items, 0, None, |group| f64::from(group == 1));
+        let gap = Point::from((
+            spread[1].card.loc.x + 20.,
+            spread[1].card.loc.y + spread[1].card.size.h + GAP / 2.,
+        ));
+        assert_eq!(spread_target(&spread, Some(ids[3]), Some(1), gap), Some(1));
+
+        // Well away from it, it folds back.
+        let away = Point::from((band.loc.x + 20., band.size.h - 2.));
+        assert_eq!(spread_target(&spread, None, Some(1), away), None);
+    }
+
+    #[test]
+    fn stacks_spread_over_time() {
+        let mut drawer = Drawer::new();
+        let screen = screen("A");
+        let screens = [screen.clone()];
+        drawer.advance_animations(Duration::ZERO, &screens);
+        assert!(drawer.set_spread(Some((screen.clone(), 1))));
+        drawer.advance_animations(Duration::from_millis(1), &screens);
+        assert!(drawer.are_animations_ongoing(&screen));
+        drawer.advance_animations(SPREAD * 2, &screens);
+        assert_eq!(drawer.spread_of(&screen, 1), 1.);
+        assert!(!drawer.are_animations_ongoing(&screen));
+
+        // And fold back.
+        drawer.set_spread(None);
+        drawer.advance_animations(SPREAD * 2 + Duration::from_millis(1), &screens);
+        assert!(drawer.are_animations_ongoing(&screen));
+        drawer.advance_animations(SPREAD * 5, &screens);
+        assert_eq!(drawer.spread_of(&screen, 1), 0.);
+        assert!(!drawer.are_animations_ongoing(&screen));
     }
 
     #[test]
@@ -1610,7 +1852,7 @@ mod tests {
         items[0].group = 1;
         items[1].group = 2;
         items[2].group = 1;
-        let order: Vec<_> = strip_slots(band, &items, 0, None, None)
+        let order: Vec<_> = strip_slots(band, &items, 0, None, |_| 0.)
             .iter()
             .map(|slot| slot.id)
             .collect();

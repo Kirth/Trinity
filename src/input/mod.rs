@@ -876,6 +876,25 @@ impl State {
             }
         }
 
+        // Spread out the stack under the pointer, and keep it spread while the pointer stays on
+        // or between its cards. A drag keeps it as it is.
+        if !pointer.is_grabbed() {
+            let spread = self.niri.output_under(pos).and_then(|(output, pos)| {
+                let output = output.clone();
+                let slots = self.niri.drawer_slots(&output);
+                let hovered = hit
+                    .as_ref()
+                    .filter(|(o, _)| *o == output)
+                    .map(|(_, id)| *id);
+                let current = self.niri.drawer.spread_on(&output);
+                let group = crate::ui::drawer::spread_target(&slots, hovered, current, pos)?;
+                Some((output, group))
+            });
+            if self.niri.drawer.set_spread(spread) {
+                self.niri.queue_redraw_all();
+            }
+        }
+
         let was_hovering = self.niri.drawer.hovered().is_some();
         if self.niri.drawer.set_hovered(hit) {
             let is_hovering = self.niri.drawer.hovered().is_some();
