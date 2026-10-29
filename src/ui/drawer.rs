@@ -61,6 +61,10 @@ const STACK_MIN_PEEK: f64 = 24.;
 const STACK_SHRINK: f64 = 0.04;
 /// How long a stack takes to spread out or fold back.
 const SPREAD: Duration = Duration::from_millis(180);
+/// How much a card in a strip grows under the pointer, as a share of its size.
+const GROW: f64 = 0.06;
+/// How long a card takes to grow or shrink back.
+const GROW_TIME: Duration = Duration::from_millis(120);
 /// Width of the rim around the panel behind a strip, in logical pixels.
 const PANEL_RIM: f32 = 1.;
 
@@ -123,6 +127,8 @@ pub struct Drawer {
     spread: Option<(Output, u64)>,
     /// How far each stack has spread out on each output, from 0 to 1.
     spread_progress: HashMap<(Output, u64), f64>,
+    /// How far each card in a strip has grown under the pointer on each output, from 0 to 1.
+    grow: HashMap<(Output, MappedId), f64>,
 }
 
 impl Drawer {
@@ -380,6 +386,23 @@ impl Drawer {
             (*progress > 0. || spread.as_ref() == Some(key)) && outputs.contains(&key.0)
         });
 
+        // The card under the pointer grows, and the others shrink back.
+        if let Some(key) = &self.hovered {
+            self.grow.entry(key.clone()).or_insert(0.);
+        }
+        let grow_step = dt.as_secs_f64() / GROW_TIME.as_secs_f64();
+        for (key, grow) in &mut self.grow {
+            if self.hovered.as_ref() == Some(key) {
+                *grow = (*grow + grow_step).min(1.);
+            } else {
+                *grow = (*grow - grow_step).max(0.);
+            }
+        }
+        let hovered = &self.hovered;
+        self.grow.retain(|key, grow| {
+            (*grow > 0. || hovered.as_ref() == Some(key)) && outputs.contains(&key.0)
+        });
+
         // Held against the edge long enough: slide all the cards out.
         if let Some((output, since)) = &self.edge_since {
             if now.saturating_sub(*since) >= EDGE_DWELL {
@@ -426,6 +449,17 @@ impl Drawer {
                 .spread_on(output)
                 .is_some_and(|g| self.spread_of(output, g) < 1.))
         {
+            return true;
+        }
+        let growing = self.grow.iter().any(|((o, id), grow)| {
+            o == output
+                && if self.hovered_on(output) == Some(*id) {
+                    *grow < 1.
+                } else {
+                    *grow > 0.
+                }
+        });
+        if growing {
             return true;
         }
         self.order.iter().any(|&id| {
@@ -483,12 +517,22 @@ impl Drawer {
             }
         }
 
-        // The dragged card goes first, to draw above the others.
+        // The dragged card goes first, to draw above the others, then the one under the
+        // pointer.
         let mut slots = slots;
-        if let Some((id, _)) = self.dragging_on(output) {
-            slots.sort_by_key(|slot| slot.id != id);
-        }
-        for slot in slots {
+        let hovered = self.hovered_on(output);
+        let dragged = self.dragging_on(output).map(|(id, _)| id);
+        slots.sort_by_key(|slot| (Some(slot.id) != dragged, Some(slot.id) != hovered));
+        for mut slot in slots {
+            // In a strip, the card under the pointer grows a little, eased out.
+            if placement.strip.is_some() && !slot.tucked {
+                let grow = self
+                    .grow
+                    .get(&(output.clone(), slot.id))
+                    .copied()
+                    .unwrap_or(0.);
+                slot.card = grown(slot.card, 1. - (1. - grow).powi(3));
+            }
             let Some(mapped) = windows.iter().find(|mapped| mapped.id() == slot.id) else {
                 continue;
             };
@@ -991,6 +1035,14 @@ fn strip_slots(
     // Spreading stacks go first, to draw above the others and get the pointer.
     spreading.extend(others);
     spreading
+}
+
+/// A card grown around its middle, by how far it's grown from 0 to 1.
+fn grown(card: Rectangle<f64, Logical>, grow: f64) -> Rectangle<f64, Logical> {
+    let factor = 1. + GROW * grow.clamp(0., 1.);
+    let size = card.size.upscale(factor);
+    let loc = card.loc - (size - card.size).downscale(2.).to_point();
+    Rectangle::new(loc, size)
 }
 
 /// A rectangle part of the way from one to another.
@@ -1857,5 +1909,36 @@ mod tests {
             .map(|slot| slot.id)
             .collect();
         assert_eq!(order, [ids[0], ids[2], ids[1]]);
+    }
+
+    #[test]
+    fn cards_grow_around_their_middle() {
+        let card = Rectangle::new(Point::from((100., 50.)), Size::from((200., 100.)));
+        assert_eq!(grown(card, 0.), card);
+        let big = grown(card, 1.);
+        assert_eq!(big.size, card.size.upscale(1. + GROW));
+        let middle = |r: Rectangle<f64, Logical>| r.loc + r.size.downscale(2.).to_point();
+        assert_eq!(middle(big), middle(card));
+    }
+
+    #[test]
+    fn hovered_card_grows_over_time() {
+        let mut drawer = Drawer::new();
+        let screen = screen("A");
+        let screens = [screen.clone()];
+        let ids = ids(1);
+        drawer.sync(&ids);
+        drawer.advance_animations(Duration::ZERO, &screens);
+        drawer.set_hovered(Some((screen.clone(), ids[0])));
+        drawer.advance_animations(Duration::from_millis(1), &screens);
+        assert!(drawer.are_animations_ongoing(&screen));
+        drawer.advance_animations(GROW_TIME * 2, &screens);
+        assert_eq!(drawer.grow[&(screen.clone(), ids[0])], 1.);
+
+        drawer.set_hovered(None);
+        drawer.advance_animations(GROW_TIME * 2 + Duration::from_millis(1), &screens);
+        assert!(drawer.are_animations_ongoing(&screen));
+        drawer.advance_animations(GROW_TIME * 5, &screens);
+        assert!(drawer.grow.is_empty());
     }
 }
