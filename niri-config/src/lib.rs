@@ -41,6 +41,7 @@ pub mod limbo;
 pub mod misc;
 pub mod output;
 pub mod recent_windows;
+pub mod strip;
 pub mod utils;
 pub mod window_rule;
 pub mod workspace;
@@ -59,6 +60,7 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputLayoutPart, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
+pub use crate::strip::Strip;
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
@@ -95,6 +97,7 @@ pub struct Config {
     pub workspaces: Vec<Workspace>,
     pub recent_windows: RecentWindows,
     pub limbo: Limbo,
+    pub strip: Strip,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +206,7 @@ where
                 "clipboard" => m_merge!(clipboard),
                 "hotkey-overlay" => m_merge!(hotkey_overlay),
                 "limbo" => m_merge!(limbo),
+                "strip" => m_merge!(strip),
                 "config-notification" => m_merge!(config_notification),
                 "animations" => m_merge!(animations),
                 "blur" => m_merge!(blur),
@@ -802,8 +806,39 @@ mod tests {
     #[test]
     fn parse_limbo() {
         assert_eq!(do_parse("").limbo.edge, LimboEdge::Right);
-        assert!(!do_parse("").limbo.on);
-        assert!(do_parse("limbo { on; }").limbo.on);
+        assert!(!do_parse("").limbo.legacy_mode);
+        assert!(do_parse("limbo { legacy-mode; }").limbo.legacy_mode);
+    }
+
+    #[test]
+    fn parse_strip() {
+        let default = do_parse("").strip;
+        assert!(!default.off);
+        assert!(default.background_gradient.is_some());
+
+        let strip = do_parse(
+            r##"strip {
+                background-color "#20202080"
+                rim-color "#00000000"
+                corner-radius 8
+            }"##,
+        )
+        .strip;
+        // A colour replaces the default gradient.
+        assert_eq!(strip.background_gradient, None);
+        assert_eq!(
+            strip.background_color,
+            Color::from_rgba8_unpremul(0x20, 0x20, 0x20, 0x80)
+        );
+        assert_eq!(strip.rim_color, Color::from_rgba8_unpremul(0, 0, 0, 0));
+        assert_eq!(strip.corner_radius, 8.);
+
+        let strip = do_parse(r##"strip { background-gradient from="#000" to="#fff"; }"##).strip;
+        assert_eq!(
+            strip.background_gradient.unwrap().to,
+            Color::from_rgba8_unpremul(255, 255, 255, 255)
+        );
+        assert!(do_parse("strip { off; }").strip.off);
         assert_eq!(
             do_parse(r#"limbo { edge "bottom"; }"#).limbo.edge,
             LimboEdge::Bottom
@@ -2619,7 +2654,46 @@ mod tests {
                 ],
             },
             limbo: Limbo {
+                legacy_mode: false,
                 edge: Right,
+            },
+            strip: Strip {
+                off: false,
+                background_color: Color {
+                    r: 0.10980392,
+                    g: 0.13725491,
+                    b: 0.2,
+                    a: 0.7019608,
+                },
+                background_gradient: Some(
+                    Gradient {
+                        from: Color {
+                            r: 0.16862746,
+                            g: 0.21176471,
+                            b: 0.3019608,
+                            a: 0.7019608,
+                        },
+                        to: Color {
+                            r: 0.0627451,
+                            g: 0.078431375,
+                            b: 0.11764706,
+                            a: 0.8,
+                        },
+                        angle: 180,
+                        relative_to: Window,
+                        in_: GradientInterpolation {
+                            color_space: Srgb,
+                            hue_interpolation: Shorter,
+                        },
+                    },
+                ),
+                rim_color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 0.14901961,
+                },
+                corner_radius: 16.0,
             },
         }
         "#);

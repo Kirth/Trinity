@@ -12,9 +12,9 @@ fn i3_config() -> Config {
     Config::parse_mem(r#"layout { layout-mode "i3"; }"#).unwrap()
 }
 
-/// i3 mode with limbo on, for the limbo tests.
+/// i3 mode with limbo in legacy mode, for the limbo tests.
 fn limbo_config() -> Config {
-    Config::parse_mem(r#"layout { layout-mode "i3"; }; limbo { on; }"#).unwrap()
+    Config::parse_mem(r#"layout { layout-mode "i3"; }; limbo { legacy-mode; }"#).unwrap()
 }
 
 /// Opens a window, commits a buffer at the size niri asked for, and returns its surface.
@@ -502,7 +502,7 @@ fn no_workspace_0(f: &mut Fixture) -> bool {
 #[test]
 fn poof_sends_window_to_limbo() {
     // The puff plays even with animations off.
-    let config = r#"layout { layout-mode "i3"; }; limbo { on; }; animations { off; }"#;
+    let config = r#"layout { layout-mode "i3"; }; limbo { legacy-mode; }; animations { off; }"#;
     let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -1276,7 +1276,7 @@ fn limbo_windows_listed_without_workspace() {
 
 #[test]
 fn drawer_on_left_edge() {
-    let config = r#"layout { layout-mode "i3"; }; limbo { on; edge "left"; }"#;
+    let config = r#"layout { layout-mode "i3"; }; limbo { legacy-mode; edge "left"; }"#;
     let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
     f.add_output(1, (1920, 1080));
     let id = f.add_client();

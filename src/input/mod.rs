@@ -763,7 +763,7 @@ impl State {
                 .start_fly_off_animation_for_window(renderer, window);
         });
 
-        let moved = if self.niri.config.borrow().limbo.on {
+        let moved = if self.niri.config.borrow().limbo.legacy_mode {
             self.niri.layout.move_to_limbo(window)
         } else {
             self.niri.layout.stash_window(window)
@@ -809,7 +809,7 @@ impl State {
                 .start_fly_off_animation_for_window(renderer, window);
         });
 
-        if self.niri.config.borrow().limbo.on {
+        if self.niri.config.borrow().limbo.legacy_mode {
             if !self.niri.layout.interactive_move_end_to_limbo(window) {
                 self.niri.layout.cancel_fly_offs();
                 return false;
@@ -851,7 +851,7 @@ impl State {
         // Pushing against the edge beside the cards slides them all out, except in the overview
         // where they're all out already.
         // A strip is always out, too.
-        if self.niri.layout.is_overview_open() || !self.niri.config.borrow().limbo.on {
+        if self.niri.layout.is_overview_open() || !self.niri.config.borrow().limbo.legacy_mode {
             if self.niri.drawer.clear_edge_pointer() {
                 self.niri.queue_redraw_all();
             }
@@ -1034,7 +1034,9 @@ impl State {
                     .windows()
                     .map(|(_, mapped)| mapped)
                     .find(|mapped| mapped.window == window && layout.is_set_aside(&window)),
-                None if self.niri.config.borrow().limbo.on => layout.limbo_windows().next(),
+                None if self.niri.config.borrow().limbo.legacy_mode => {
+                    layout.limbo_windows().next()
+                }
                 None => layout.strip_windows(&output).next(),
             };
             mapped.map(|mapped| mapped.id())

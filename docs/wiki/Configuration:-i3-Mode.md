@@ -103,6 +103,24 @@ binds {
 
 The limbo actions below work on the strip too while limbo is off: `move-window-to-limbo` sets a window aside, and `pull-from-limbo` and `toggle-limbo-window` bring the newest one back next to the focused window.
 
+The thumbnails sit on a panel of smoked glass, a modern take on the Windows Longhorn sidebar.
+Change its look, or turn it off, in the `strip {}` section:
+
+```kdl
+strip {
+    // A solid colour instead of the default gradient.
+    background-color "#1c2333b3"
+    // Or a gradient, like for borders.
+    background-gradient from="#2b364db3" to="#10141ecc" angle=180
+    // The thin rim around the panel; make it transparent for none.
+    rim-color "#ffffff26"
+    corner-radius 16
+
+    // No panel, just the thumbnails.
+    // off
+}
+```
+
 The overview shows each workspace with its strip.
 Thumbnails in the strip update a couple of times a second, to save battery.
 `niri msg windows` lists windows in the strip on their workspace.
@@ -111,11 +129,11 @@ Thumbnails in the strip update a couple of times a second, to save battery.
 
 Limbo is a hidden place for windows you want out of the way: it isn't a workspace, so it doesn't show up in your bar or in the Alt-Tab switcher.
 It's off by default, in favour of [the strip](#the-strip).
-Turn it on to send windows there instead:
+Turn on legacy mode to send windows there instead:
 
 ```kdl
 limbo {
-    on
+    legacy-mode
 }
 ```
 
@@ -144,7 +162,7 @@ The poof gesture and flinging always use the right edge.
 
 ```kdl
 limbo {
-    on
+    legacy-mode
     // Where the drawer of windows in limbo sits: "left", "right" (default) or "bottom".
     edge "bottom"
 }

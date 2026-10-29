@@ -11,6 +11,7 @@ use smithay::backend::renderer::Color32F;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::niri_render_elements;
+use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::label::{render_pill, LabelCache};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -81,6 +82,7 @@ pub struct Slot {
 niri_render_elements! {
     CardRenderElement<R> => {
         Thumbnail = ThumbnailElement<R>,
+        Border = BorderRenderElement,
         SolidColor = SolidColorRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
     }

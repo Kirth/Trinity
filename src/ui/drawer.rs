@@ -6,13 +6,16 @@
 //! always out, in the band the layout leaves free for them. The slide times itself rather than
 //! using an `Animation`, so it plays even with animations turned off.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use niri_config::{Color, LimboEdge};
+use niri_config::{Color, CornerRadius, LimboEdge};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::layout::workspace::STRIP_WIDTH;
+use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::RenderCtx;
 pub use crate::ui::cards::{
@@ -48,6 +51,10 @@ const ROW_MAX_STACK: f64 = 0.9;
 const ROW_MAX_ASPECT: f64 = 2.5;
 /// How long the pointer has to stay against the edge beside the cards to slide them all out.
 const EDGE_DWELL: Duration = Duration::from_millis(150);
+/// Gap between the panel behind a strip and the edges of its band, in logical pixels.
+const PANEL_INSET: f64 = 4.;
+/// Width of the rim around the panel behind a strip, in logical pixels.
+const PANEL_RIM: f32 = 1.;
 
 /// Where the pointer is, as far as sliding out all the cards goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +100,9 @@ pub struct Drawer {
     last_tick: Option<Duration>,
     /// Outlines, titles and app icons of the cards.
     decorations: CardDecorations,
+    /// Panels behind strips, with their rims, by output and position, so that they keep their
+    /// element ids.
+    panels: RefCell<HashMap<(String, i64, i64), [BorderRenderElement; 2]>>,
     /// The output whose edge the pointer has been against, and since when, until the cards slide
     /// out.
     edge_since: Option<(Output, Duration)>,
@@ -360,6 +370,7 @@ impl Drawer {
         windows: &[&Mapped],
         placement: DrawerPlacement,
         urgent_color: Color,
+        style: &niri_config::Strip,
         scale: f64,
         alpha: f32,
         push: &mut dyn FnMut(DrawerRenderElement<R>),
@@ -433,6 +444,96 @@ impl Drawer {
                 ),
             ));
         }
+
+        // The panel behind a strip, below its cards.
+        if let Some(band) = placement.strip {
+            if !style.off && BorderRenderElement::has_shader(ctx.renderer) {
+                for elem in self.render_panel(output, band, style, scale, alpha) {
+                    push(DrawerRenderElement::Border(elem));
+                }
+            }
+        }
+    }
+
+    /// Renders the panel behind a strip in this band, and its rim on top.
+    fn render_panel(
+        &self,
+        output: &Output,
+        band: Rectangle<f64, Logical>,
+        style: &niri_config::Strip,
+        scale: f64,
+        alpha: f32,
+    ) -> [BorderRenderElement; 2] {
+        // Scaled down with the band, as in the overview.
+        let zoom = band.size.w / STRIP_WIDTH;
+        let inset = PANEL_INSET * zoom;
+        let mut panel = band;
+        panel.loc += Point::from((inset, inset));
+        panel.size.w = (panel.size.w - inset * 2.).max(1.);
+        panel.size.h = (panel.size.h - inset * 2.).max(1.);
+        let panel = panel.to_physical_precise_round(scale).to_logical(scale);
+
+        let radius = CornerRadius::from(style.corner_radius as f32 * zoom as f32)
+            .fit_to(panel.size.w as f32, panel.size.h as f32);
+        let (from, to, angle, interpolation) = match style.background_gradient {
+            Some(gradient) => (
+                gradient.from,
+                gradient.to,
+                ((gradient.angle as f32) - 90.).to_radians(),
+                gradient.in_,
+            ),
+            None => (
+                style.background_color,
+                style.background_color,
+                0.,
+                Default::default(),
+            ),
+        };
+        let area = Rectangle::from_size(panel.size);
+
+        let mut panels = self.panels.borrow_mut();
+        // Positions change all the time while the overview opens; don't keep them all.
+        if panels.len() > 32 {
+            panels.clear();
+        }
+        let key = (
+            output.name(),
+            panel.loc.x.round() as i64,
+            panel.loc.y.round() as i64,
+        );
+        let [background, rim] = panels
+            .entry(key)
+            .or_insert_with(|| [BorderRenderElement::empty(), BorderRenderElement::empty()]);
+        background.update(
+            panel.size,
+            area,
+            interpolation,
+            from,
+            to,
+            angle,
+            area,
+            0.,
+            radius,
+            scale as f32,
+            alpha,
+        );
+        rim.update(
+            panel.size,
+            area,
+            Default::default(),
+            style.rim_color,
+            style.rim_color,
+            0.,
+            area,
+            PANEL_RIM,
+            radius,
+            scale as f32,
+            alpha,
+        );
+        [
+            rim.clone().with_location(panel.loc),
+            background.clone().with_location(panel.loc),
+        ]
     }
 }
 

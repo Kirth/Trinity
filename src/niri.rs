@@ -1168,7 +1168,7 @@ impl State {
             .flat_map(|output| niri.ace_hint_drawer_cards(output))
             .map(|(id, _)| id)
             .collect();
-        if niri.config.borrow().limbo.on {
+        if niri.config.borrow().limbo.legacy_mode {
             ids.extend(
                 niri.layout
                     .limbo_windows()
@@ -4385,7 +4385,7 @@ impl Niri {
         self.poof.advance_animations(self.clock.now());
         let outputs: Vec<_> = self.global_space.outputs().cloned().collect();
         // The cards show limbo, or with limbo off, the strips of the active workspaces.
-        let cards: Vec<_> = if self.config.borrow().limbo.on {
+        let cards: Vec<_> = if self.config.borrow().limbo.legacy_mode {
             self.layout.limbo_windows().map(|m| m.id()).collect()
         } else {
             outputs
@@ -4669,6 +4669,7 @@ impl Niri {
                 &windows,
                 placement,
                 self.config.borrow().layout.border.urgent_color,
+                &self.config.borrow().strip,
                 output.current_scale().fractional_scale(),
                 drawer_alpha,
                 &mut |elem| push(elem.into()),
@@ -6748,7 +6749,7 @@ impl Niri {
         if !self.layout.is_i3() {
             return Vec::new();
         }
-        if !self.layout.is_overview_open() || self.config.borrow().limbo.on {
+        if !self.layout.is_overview_open() || self.config.borrow().limbo.legacy_mode {
             let windows = self.drawer_windows(output);
             if windows.is_empty() {
                 return Vec::new();
@@ -6787,7 +6788,7 @@ impl Niri {
             return Vec::new();
         }
         // With limbo off, the cards are the strip of the active workspace.
-        if !self.config.borrow().limbo.on {
+        if !self.config.borrow().limbo.legacy_mode {
             if self.layout.is_overview_open() {
                 return Vec::new();
             }
@@ -6863,7 +6864,7 @@ impl Niri {
             edge
         };
 
-        let strip = (!self.config.borrow().limbo.on)
+        let strip = (!self.config.borrow().limbo.legacy_mode)
             .then(|| self.layout.strip_area(output))
             .flatten();
         let edge = if strip.is_some() {
