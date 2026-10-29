@@ -22,7 +22,7 @@ pub use crate::ui::cards::{
     along_edge, insertion_point, is_past_card, window_size,
     CardRenderElement as DrawerRenderElement, Insert, Item, Slot,
 };
-use crate::ui::cards::{card_size, CardDecorations, GAP, MIN_CARD_H};
+use crate::ui::cards::{card_size, CardDecorations, CardInfo, GAP, MIN_CARD_H};
 use crate::ui::mru::push_window_thumbnail;
 use crate::window::mapped::MappedId;
 use crate::window::Mapped;
@@ -393,9 +393,11 @@ impl Drawer {
             Some((slot, mapped))
         });
         if let Some((slot, mapped)) = hovered {
+            let info = CardInfo::new(mapped);
             if let Some(elem) = self.decorations.render_caption(
                 ctx.renderer,
                 mapped,
+                info.text.as_deref(),
                 slot.card,
                 placement.edge,
                 scale,
@@ -414,6 +416,22 @@ impl Drawer {
                 continue;
             };
             let urgent = crate::layout::LayoutElement::is_urgent(*mapped);
+            let info = CardInfo::new(mapped);
+            // What providers want shown, above the card.
+            if let Some(badge) = &info.badge {
+                if let Some(elem) =
+                    self.decorations
+                        .render_badge(ctx.renderer, badge, slot.card, scale, opacity)
+                {
+                    push(DrawerRenderElement::Texture(elem));
+                }
+            }
+            if let Some(progress) = info.progress {
+                push(DrawerRenderElement::SolidColor(
+                    self.decorations
+                        .render_progress(slot.id, slot.card, progress, opacity),
+                ));
+            }
             // The app icon, above its card.
             if let Some(elem) = self.decorations.render_icon(
                 ctx.renderer,
@@ -440,6 +458,7 @@ impl Drawer {
                     slot.id,
                     slot.card,
                     urgent.then_some(urgent_color),
+                    info.status,
                     opacity,
                 ),
             ));

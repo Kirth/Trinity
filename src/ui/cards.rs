@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use niri_config::{Color, LimboEdge};
+use niri_ipc::{Annotation, CardStatus};
 use ordered_float::NotNan;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::Color32F;
@@ -43,6 +44,17 @@ const CAPTION_FILL: [f64; 4] = [0.12, 0.12, 0.12, 0.7];
 const CAPTION_GAP: f64 = 8.;
 /// Longest title shown, in characters.
 const CAPTION_MAX_CHARS: usize = 60;
+/// Badge in the corner of a card, from a provider.
+const BADGE_FONT: &str = "sans bold 11px";
+const BADGE_RADIUS: f64 = 9.;
+const BADGE_FILL: [f64; 4] = [0.1, 0.1, 0.1, 0.85];
+/// Gap between the badge and the card's corner, in logical pixels.
+const BADGE_INSET: f64 = 6.;
+/// Height of the progress bar along the bottom of a card, in logical pixels.
+const PROGRESS_H: f64 = 3.;
+const PROGRESS_COLOR: [f32; 4] = [0.45, 0.7, 1., 0.9];
+/// Width of the outline of a card whose window has a status from a provider.
+const STATUS_OUTLINE: f64 = 2.;
 /// Size of the app icon on a card, in logical pixels, at most half the card.
 const ICON: f64 = 32.;
 /// Gap between the app icon and the card's corner, in logical pixels.
@@ -99,20 +111,71 @@ pub struct CardDecorations {
     icons: AppIcons,
     /// Loaded icons by app id and size in physical pixels.
     icon_buffers: LabelCache<(String, i32)>,
+    /// Badges by text and scale.
+    badges: LabelCache<(String, NotNan<f64>)>,
+    /// Progress bar on each card, kept so that it keeps its element id.
+    progress: RefCell<HashMap<MappedId, SolidColorBuffer>>,
+}
+
+/// What a window's annotations amount to on its card.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CardInfo {
+    /// The badges of every provider, together.
+    pub badge: Option<String>,
+    /// The most pressing status.
+    pub status: Option<CardStatus>,
+    /// The texts of every provider, one per line.
+    pub text: Option<String>,
+    /// The progress of the first provider that has one.
+    pub progress: Option<f64>,
+}
+
+impl CardInfo {
+    pub fn new(mapped: &Mapped) -> Self {
+        Self::from_annotations(mapped.annotations().map(|(_, a)| a))
+    }
+
+    pub fn from_annotations<'a>(annotations: impl Iterator<Item = &'a Annotation>) -> Self {
+        let mut badges = Vec::new();
+        let mut texts = Vec::new();
+        let mut info = Self::default();
+        for a in annotations {
+            badges.extend(a.badge.clone());
+            texts.extend(a.text.clone());
+            info.status = info.status.max(a.status);
+            info.progress = info.progress.or(a.progress);
+        }
+        info.badge = (!badges.is_empty()).then(|| badges.join(" · "));
+        info.text = (!texts.is_empty()).then(|| texts.join("\n"));
+        info
+    }
+}
+
+/// Colour of a card's outline for a status.
+pub fn status_color(status: CardStatus) -> Color {
+    match status {
+        CardStatus::Done => Color::from_rgba8_unpremul(0x5f, 0xc8, 0x7a, 0xff),
+        CardStatus::Working => Color::from_rgba8_unpremul(0x5a, 0x9c, 0xf2, 0xff),
+        CardStatus::Waiting => Color::from_rgba8_unpremul(0xf2, 0xb2, 0x3a, 0xff),
+        CardStatus::Error => Color::from_rgba8_unpremul(0xe5, 0x4b, 0x4b, 0xff),
+    }
 }
 
 impl CardDecorations {
-    /// Renders the outline behind a card, in the urgent colour if its window wants attention.
+    /// Renders the outline behind a card: in the urgent colour if its window wants attention,
+    /// otherwise in the colour of its status.
     pub fn render_outline(
         &self,
         id: MappedId,
         card: Rectangle<f64, Logical>,
         urgent: Option<Color>,
+        status: Option<CardStatus>,
         opacity: f32,
     ) -> SolidColorRenderElement {
-        let (width, color): (f64, Color32F) = match urgent {
-            Some(color) => (URGENT_OUTLINE, color.into()),
-            None => (OUTLINE, OUTLINE_COLOR.into()),
+        let (width, color): (f64, Color32F) = match (urgent, status) {
+            (Some(color), _) => (URGENT_OUTLINE, color.into()),
+            (None, Some(status)) => (STATUS_OUTLINE, status_color(status).into()),
+            (None, None) => (OUTLINE, OUTLINE_COLOR.into()),
         };
         let mut outline = card;
         outline.loc -= Point::from((width, width));
@@ -128,28 +191,84 @@ impl CardDecorations {
     /// Forgets the outlines of cards that are gone.
     pub fn retain(&mut self, present: impl Fn(MappedId) -> bool) {
         self.outlines.get_mut().retain(|id, _| present(*id));
+        self.progress.get_mut().retain(|id, _| present(*id));
+    }
+
+    /// Renders a provider's badge in the top corner of a card, on the side facing into the
+    /// screen.
+    pub fn render_badge<R: NiriRenderer>(
+        &self,
+        renderer: &mut R,
+        text: &str,
+        card: Rectangle<f64, Logical>,
+        scale: f64,
+        opacity: f32,
+    ) -> Option<PrimaryGpuTextureRenderElement> {
+        let key = (text.to_owned(), NotNan::new(scale).ok()?);
+        let buffer = self.badges.get(key, || {
+            let markup = pango::glib::markup_escape_text(text);
+            render_pill(&markup, BADGE_FONT, BADGE_RADIUS, BADGE_FILL, scale)
+        })?;
+        let texture =
+            TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
+        let loc = badge_loc(card, texture.logical_size());
+        let loc = loc.to_physical_precise_round(scale).to_logical(scale);
+        let elem = TextureRenderElement::from_texture_buffer(
+            texture,
+            loc,
+            opacity,
+            None,
+            None,
+            Kind::Unspecified,
+        );
+        Some(PrimaryGpuTextureRenderElement(elem))
+    }
+
+    /// Renders a progress bar along the bottom of a card.
+    pub fn render_progress(
+        &self,
+        id: MappedId,
+        card: Rectangle<f64, Logical>,
+        progress: f64,
+        opacity: f32,
+    ) -> SolidColorRenderElement {
+        let rect = progress_rect(card, progress);
+        let mut bars = self.progress.borrow_mut();
+        let buffer = bars
+            .entry(id)
+            .or_insert_with(|| SolidColorBuffer::new(rect.size, PROGRESS_COLOR));
+        buffer.resize(rect.size);
+        SolidColorRenderElement::from_buffer(buffer, rect.loc, opacity, Kind::Unspecified)
     }
 }
 
 impl CardDecorations {
-    /// Renders the title of a window next to its card.
+    /// Renders the title of a window next to its card, with a provider's text below it.
     pub fn render_caption<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         mapped: &Mapped,
+        text: Option<&str>,
         card: Rectangle<f64, Logical>,
         edge: LimboEdge,
         scale: f64,
     ) -> Option<PrimaryGpuTextureRenderElement> {
         let title = with_toplevel_role(mapped.toplevel(), |role| role.title.clone())?;
         let title = title.trim();
-        if title.is_empty() {
+        if title.is_empty() && text.is_none() {
             return None;
         }
 
-        let key = (mapped.id(), title.to_owned(), NotNan::new(scale).ok()?);
+        let mut markup =
+            pango::glib::markup_escape_text(&truncate(title, CAPTION_MAX_CHARS)).to_string();
+        if let Some(text) = text {
+            let text = pango::glib::markup_escape_text(text);
+            markup.push_str(&format!(
+                "\n<span size=\"smaller\" alpha=\"75%\">{text}</span>"
+            ));
+        }
+        let key = (mapped.id(), markup.clone(), NotNan::new(scale).ok()?);
         let buffer = self.captions.get(key, || {
-            let markup = pango::glib::markup_escape_text(&truncate(title, CAPTION_MAX_CHARS));
             render_pill(&markup, CAPTION_FONT, CAPTION_RADIUS, CAPTION_FILL, scale)
         })?;
         let texture =
@@ -206,6 +325,23 @@ impl CardDecorations {
         );
         Some(PrimaryGpuTextureRenderElement(elem))
     }
+}
+
+/// Where a badge goes on a card: in the top-right corner.
+pub fn badge_loc(card: Rectangle<f64, Logical>, size: Size<f64, Logical>) -> Point<f64, Logical> {
+    Point::from((
+        card.loc.x + card.size.w - BADGE_INSET - size.w,
+        card.loc.y + BADGE_INSET,
+    ))
+}
+
+/// Where the progress bar goes on a card: along its bottom edge, as long as the progress.
+pub fn progress_rect(card: Rectangle<f64, Logical>, progress: f64) -> Rectangle<f64, Logical> {
+    let h = PROGRESS_H.min(card.size.h);
+    Rectangle::new(
+        Point::from((card.loc.x, card.loc.y + card.size.h - h)),
+        Size::from(((card.size.w * progress.clamp(0., 1.)).max(1.), h)),
+    )
 }
 
 /// Where the app icon goes on a card: in the bottom corner on the side facing into the screen.
@@ -311,4 +447,59 @@ pub fn card_size(size: Size<f64, Logical>, card_h: f64) -> Size<f64, Logical> {
     let aspect = size.w / size.h;
     let w = f64::min(aspect * card_h, CARD_MAX_W).max(1.);
     Size::from((w, (w / aspect).max(1.)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card() -> Rectangle<f64, Logical> {
+        Rectangle::new(Point::from((100., 50.)), Size::from((200., 120.)))
+    }
+
+    #[test]
+    fn annotations_add_up() {
+        let a = Annotation {
+            badge: Some(String::from("12 tabs")),
+            status: Some(CardStatus::Working),
+            progress: Some(0.25),
+            ..Default::default()
+        };
+        let b = Annotation {
+            badge: Some(String::from("3")),
+            status: Some(CardStatus::Waiting),
+            text: Some(String::from("needs approval")),
+            progress: Some(0.75),
+        };
+        let info = CardInfo::from_annotations([&a, &b].into_iter());
+        assert_eq!(info.badge.as_deref(), Some("12 tabs · 3"));
+        // The most pressing status wins.
+        assert_eq!(info.status, Some(CardStatus::Waiting));
+        assert_eq!(info.text.as_deref(), Some("needs approval"));
+        assert_eq!(info.progress, Some(0.25));
+
+        assert_eq!(
+            CardInfo::from_annotations(std::iter::empty()),
+            CardInfo::default()
+        );
+    }
+
+    #[test]
+    fn badge_sits_in_the_top_right_corner() {
+        let loc = badge_loc(card(), Size::from((40., 18.)));
+        assert_eq!(
+            loc,
+            Point::from((300. - BADGE_INSET - 40., 50. + BADGE_INSET))
+        );
+    }
+
+    #[test]
+    fn progress_runs_along_the_bottom() {
+        let rect = progress_rect(card(), 0.5);
+        assert_eq!(rect.loc, Point::from((100., 170. - PROGRESS_H)));
+        assert_eq!(rect.size, Size::from((100., PROGRESS_H)));
+        // Kept in range, and always visible.
+        assert_eq!(progress_rect(card(), 3.).size.w, 200.);
+        assert_eq!(progress_rect(card(), 0.).size.w, 1.);
+    }
 }
