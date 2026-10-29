@@ -121,6 +121,23 @@ strip {
 }
 ```
 
+##### Card annotations
+
+Other programs can put information on the cards: a badge like a count of tabs, a status that colours the card's outline (done, working, waiting or error), a line of text shown with the title, and a progress bar.
+niri knows nothing about the apps themselves; small providers send it annotations over IPC:
+
+```sh
+niri msg action annotate-window --id 42 --source chromium --badge "12 tabs"
+niri msg action annotate-window --id 57 --source claude --status waiting --text "Needs approval"
+niri msg action clear-annotations --id 57 --source claude
+```
+
+Each provider uses its own `--source`, so several can annotate one window; `--ttl-ms` clears an annotation after a while unless it's set again, so a provider that dies doesn't leave stale badges.
+`niri msg windows` shows each window's annotations and, for windows in a strip, whether their card is on screen.
+The event stream tells providers when to act without polling: `WindowCardChanged` when a window goes into or out of a strip or its card is shown or hidden, and `WindowAnnotationsChanged` when annotations change.
+
+[`contrib/card-providers`](https://github.com/Kirth/Trinity/tree/main/contrib/card-providers) has a provider for Claude Code, run from its hooks, that shows whether a session is working, waiting for you, or done.
+
 The overview shows each workspace with its strip.
 Thumbnails in the strip update a couple of times a second, to save battery.
 `niri msg windows` lists windows in the strip on their workspace.
