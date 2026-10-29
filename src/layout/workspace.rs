@@ -531,6 +531,7 @@ impl<W: LayoutElement> Workspace<W> {
 
         self.base_options = base_options;
         self.options = options;
+        self.resize_strip_tiles();
 
         self.update_layout_mode();
     }
@@ -828,6 +829,7 @@ impl<W: LayoutElement> Workspace<W> {
                 let tile = &mut entry.removed.tile;
                 tile.update_config(size, scale.fractional_scale(), self.options.clone());
             }
+            self.resize_strip_tiles();
 
             let shadow_config =
                 compute_workspace_shadow_config(self.options.overview.workspace_shadow, size);
@@ -2646,7 +2648,8 @@ impl<W: LayoutElement> Workspace<W> {
         ))
     }
 
-    /// Hands the tiling layout its area again, after the strip filled up or emptied.
+    /// Hands the tiling layout its area again, after the strip filled up or emptied, and sizes
+    /// the windows in the strip to match.
     fn update_tiling_area(&mut self) {
         let tiling_area = self.tiling_area();
         if let Some(tiling) = &mut self.tiling {
@@ -2656,6 +2659,21 @@ impl<W: LayoutElement> Workspace<W> {
                 self.scale.fractional_scale(),
                 self.options.clone(),
             );
+        }
+        self.resize_strip_tiles();
+    }
+
+    /// Sizes the windows in the strip like a lone window in the layout: their cards all get the
+    /// same shape, and swapping one in barely resizes it.
+    fn resize_strip_tiles(&mut self) {
+        let gaps = self.options.layout.gaps;
+        let area = self.tiling_area();
+        let size = Size::from((
+            f64::max(area.size.w - gaps * 2., 1.),
+            f64::max(area.size.h - gaps * 2., 1.),
+        ));
+        for entry in &mut self.strip {
+            entry.removed.tile.request_tile_size(size, false, None);
         }
     }
 

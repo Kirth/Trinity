@@ -1506,3 +1506,22 @@ fn hints_label_strip_windows_last() {
     assert_eq!(focused_id(&mut f), Some(ids[2]));
     assert_eq!(strip_ids(&mut f).len(), 1);
 }
+
+#[test]
+fn strip_windows_get_the_full_size() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+
+    let _first = open_window(&mut f, id);
+    let second = open_window(&mut f, id);
+    let _ = f.client(id).window(&second).format_recent_configures();
+
+    // Set aside from a half-width column, it gets the size of a lone window next to the strip.
+    poof(&mut f, 1000);
+    f.double_roundtrip(id);
+    assert_snapshot!(
+        f.client(id).window(&second).format_recent_configures(),
+        @"size: 1672 × 1048, bounds: 1888 × 1048, states: []"
+    );
+}
