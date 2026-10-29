@@ -341,6 +341,10 @@ pub trait LayoutElement {
     fn interactive_resize_data(&self) -> Option<InteractiveResizeData>;
 
     fn on_commit(&mut self, serial: Serial);
+
+    /// Holds the element's card back until it answers the changes of going to the strip or
+    /// limbo, so that the card doesn't show at a stale size.
+    fn hold_until_settled(&mut self, _now: Duration) {}
 }
 
 #[derive(Debug)]
@@ -4874,6 +4878,8 @@ impl<W: LayoutElement> Layout<W> {
         );
         move_.tile.stop_move_animations();
         move_.tile.window().output_leave(&move_.output);
+        let now = self.clock.now_unadjusted();
+        move_.tile.window_mut().hold_until_settled(now);
 
         self.limbo.insert(
             0,
@@ -5879,6 +5885,10 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         };
         removed.tile.stop_move_animations();
+        removed
+            .tile
+            .window_mut()
+            .hold_until_settled(self.clock.now_unadjusted());
         self.limbo.insert(0, removed);
         true
     }

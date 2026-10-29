@@ -760,10 +760,12 @@ fn drawer_shows_poofed_windows() {
     for msec in [1000, 1100, 1200] {
         move_right_at(&mut f, msec);
     }
+    settle_windows(&mut f, id);
     assert_eq!(drawer_ids(&mut f), [ids[2]]);
     for msec in [3000, 3100, 3200] {
         move_right_at(&mut f, msec);
     }
+    settle_windows(&mut f, id);
     assert_eq!(drawer_ids(&mut f), [ids[1], ids[2]]);
 
     // The cards peek out at the right edge, and a point on one finds its window.
@@ -842,6 +844,18 @@ fn pull_from_drawer_focuses_window() {
     // It's no longer undoable as a poof.
     move_left_at(&mut f, 1500);
     assert_eq!(workspace_number_of(&mut f, ids[1]), Some(1));
+}
+
+/// Has the client answer its configures, so that cards of windows that just went to the strip or
+/// limbo show.
+fn settle_windows(f: &mut Fixture, id: ClientId) {
+    f.double_roundtrip(id);
+    for window in &mut f.client(id).state.windows {
+        if window.recent_configures().next().is_some() {
+            window.ack_last_and_commit();
+        }
+    }
+    f.double_roundtrip(id);
 }
 
 fn poof(f: &mut Fixture, start_msec: u64) {
@@ -1030,6 +1044,7 @@ fn hints_label_limbo_windows_last() {
     let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
 
     poof(&mut f, 1000);
+    settle_windows(&mut f, id);
     assert_eq!(drawer_ids(&mut f), [ids[2]]);
 
     // The visible windows get a and s, the card in the drawer comes after them.
@@ -1127,6 +1142,7 @@ fn three_in_limbo(f: &mut Fixture, id: ClientId) -> Vec<crate::window::mapped::M
     for _ in 0..3 {
         limbo_action(f, id, niri_config::Action::MoveWindowToLimbo);
     }
+    settle_windows(f, id);
     let order = drawer_ids(f);
     assert_eq!(order.len(), 3);
     order
@@ -1275,6 +1291,44 @@ fn limbo_windows_listed_without_workspace() {
 }
 
 #[test]
+fn cards_wait_for_their_window_to_settle() {
+    let mut f = Fixture::with_config(limbo_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    // Shortly after the window went in, unless told otherwise.
+    let cards = |f: &mut Fixture, msec: u64| {
+        let niri = f.niri();
+        niri.clock
+            .set_unadjusted(std::time::Duration::from_millis(msec));
+        niri.card_groups(&output)
+            .into_iter()
+            .flat_map(|(windows, _)| windows.into_iter().map(|m| m.id()))
+            .collect::<Vec<_>>()
+    };
+
+    // In limbo, but no card until the window answers the configure.
+    poof(&mut f, 1000);
+    f.double_roundtrip(id);
+    assert_eq!(drawer_ids(&mut f), [ids[1]]);
+    assert!(cards(&mut f, 1300).is_empty());
+    settle_windows(&mut f, id);
+    assert_eq!(cards(&mut f, 1300), [ids[1]]);
+
+    // A window that never answers still shows after a while.
+    f.niri()
+        .clock
+        .set_unadjusted(std::time::Duration::from_millis(2000));
+    limbo_action(&mut f, id, niri_config::Action::MoveWindowToLimbo);
+    assert_eq!(cards(&mut f, 2100), [ids[1]]);
+    assert_eq!(cards(&mut f, 5000), [ids[0], ids[1]]);
+}
+
+#[test]
 fn drawer_on_left_edge() {
     let config = r#"layout { layout-mode "i3"; }; limbo { legacy-mode; edge "left"; }"#;
     let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
@@ -1288,6 +1342,7 @@ fn drawer_on_left_edge() {
 
     // The gesture still uses the right edge.
     poof(&mut f, 1000);
+    settle_windows(&mut f, id);
     assert_eq!(drawer_ids(&mut f), [ids[1]]);
 
     // The card peeks out on the left.
@@ -1459,6 +1514,7 @@ fn overview_shows_each_workspace_strip() {
     let _second = open_window(&mut f, id);
     let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
     poof(&mut f, 1000);
+    settle_windows(&mut f, id);
 
     f.niri_state()
         .do_action(niri_config::Action::OpenOverview, false);
@@ -1497,6 +1553,7 @@ fn hints_label_strip_windows_last() {
     let _third = open_window(&mut f, id);
     let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
     poof(&mut f, 1000);
+    settle_windows(&mut f, id);
     assert_eq!(strip_ids(&mut f), [ids[2]]);
 
     f.niri_state().open_ace_hints();

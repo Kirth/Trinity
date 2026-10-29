@@ -193,6 +193,10 @@ pub struct Mapped {
     /// in response yet.
     uncommitted_maximized: Vec<(Serial, bool)>,
 
+    /// Whether the window's card waits for it to settle its size after going to the strip or
+    /// limbo, with when it started waiting.
+    settle: Option<(Settle, Duration)>,
+
     /// Most recent monotonic time when the window had the focus.
     focus_timestamp: Option<Duration>,
 
@@ -273,6 +277,18 @@ impl InteractiveResize {
     }
 }
 
+/// How long a card waits at most for its window to settle its size.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Waiting for a window to answer the changes of going to the strip or limbo.
+#[derive(Debug, Clone, Copy)]
+enum Settle {
+    /// Waiting for the configure with the changes to be sent.
+    WaitingForConfigure,
+    /// Waiting for the window to commit in response to the configure.
+    WaitingForCommit(Serial),
+}
+
 /// Request-size-once logic state.
 #[derive(Debug, Clone, Copy)]
 enum RequestSizeOnce {
@@ -320,6 +336,7 @@ impl Mapped {
             is_maximized: false,
             is_pending_maximized: false,
             uncommitted_maximized: Vec::new(),
+            settle: None,
             focus_timestamp: None,
             annotations: BTreeMap::new(),
         };
@@ -686,6 +703,13 @@ impl Mapped {
         let changed = self.is_urgent != urgent;
         self.is_urgent = urgent;
         self.need_to_recompute_rules |= changed;
+    }
+
+    /// Whether the window hasn't answered the changes of going to the strip or limbo yet, so its
+    /// card would show at a stale size.
+    pub fn is_settling(&self, now: Duration) -> bool {
+        self.settle
+            .is_some_and(|(_, since)| now.saturating_sub(since) < SETTLE_TIMEOUT)
     }
 
     pub fn is_urgent(&self) -> bool {
@@ -1211,6 +1235,10 @@ impl LayoutElement for Mapped {
                 self.request_size_once = Some(RequestSizeOnce::WaitingForCommit(serial));
             }
 
+            if let Some((Settle::WaitingForConfigure, since)) = self.settle {
+                self.settle = Some((Settle::WaitingForCommit(serial), since));
+            }
+
             // If is_pending_windowed_fullscreen changed compared to the last value that we "sent"
             // to the window, store the configure serial.
             let last_sent_windowed_fullscreen = self
@@ -1241,6 +1269,11 @@ impl LayoutElement for Mapped {
                 Some(InteractiveResize::WaitingForLastConfigure { .. }) => None,
                 x => x,
             };
+
+            // Nothing changed, so there's nothing to wait for.
+            if let Some((Settle::WaitingForConfigure, _)) = self.settle {
+                self.settle = None;
+            }
         }
 
         self.animate_next_configure = false;
@@ -1472,6 +1505,10 @@ impl LayoutElement for Mapped {
         Some(self.interactive_resize.as_ref()?.data())
     }
 
+    fn hold_until_settled(&mut self, now: Duration) {
+        self.settle = Some((Settle::WaitingForConfigure, now));
+    }
+
     fn on_commit(&mut self, commit_serial: Serial) {
         if let Some(InteractiveResize::WaitingForLastCommit { serial, .. }) =
             &self.interactive_resize
@@ -1484,6 +1521,12 @@ impl LayoutElement for Mapped {
         if let Some(RequestSizeOnce::WaitingForCommit(serial)) = &self.request_size_once {
             if commit_serial.is_no_older_than(serial) {
                 self.request_size_once = Some(RequestSizeOnce::UseWindowSize);
+            }
+        }
+
+        if let Some((Settle::WaitingForCommit(serial), _)) = &self.settle {
+            if commit_serial.is_no_older_than(serial) {
+                self.settle = None;
             }
         }
 

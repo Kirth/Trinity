@@ -5025,6 +5025,8 @@ impl Niri {
 
         let mut res = RenderResult::Skipped;
         if self.monitors_active {
+            // Show the cards once their windows settle, or time out.
+            let cards_settling = self.are_cards_settling(output);
             let state = self.output_state.get_mut(output).unwrap();
             state.unfinished_animations_remain = self.layout.are_animations_ongoing(Some(output));
             state.unfinished_animations_remain |=
@@ -5034,6 +5036,7 @@ impl Niri {
             state.unfinished_animations_remain |= self.window_mru_ui.are_animations_ongoing();
             state.unfinished_animations_remain |= self.poof.are_animations_ongoing(output);
             state.unfinished_animations_remain |= self.drawer.are_animations_ongoing(output);
+            state.unfinished_animations_remain |= cards_settling;
             state.unfinished_animations_remain |= state.screen_transition.is_some();
 
             // Also keep redrawing if the current cursor is animated.
@@ -6761,7 +6764,28 @@ impl Niri {
 
     /// The cards on this output, in groups that each lay out on their own: the drawer, or in the
     /// overview with limbo off, the strip of each workspace in its thumbnail.
+    ///
+    /// A window that just went in shows once it has settled its size, so that its card doesn't
+    /// show at a stale size first.
     pub fn card_groups(&self, output: &Output) -> Vec<(Vec<&Mapped>, DrawerPlacement)> {
+        let now = self.clock.now_unadjusted();
+        let mut groups = self.all_card_groups(output);
+        for (windows, _) in &mut groups {
+            windows.retain(|mapped| !mapped.is_settling(now));
+        }
+        groups
+    }
+
+    /// Whether a window on this output's cards hasn't settled its size yet.
+    fn are_cards_settling(&self, output: &Output) -> bool {
+        let now = self.clock.now_unadjusted();
+        self.all_card_groups(output)
+            .iter()
+            .any(|(windows, _)| windows.iter().any(|mapped| mapped.is_settling(now)))
+    }
+
+    /// The cards on this output, settled or not.
+    fn all_card_groups(&self, output: &Output) -> Vec<(Vec<&Mapped>, DrawerPlacement)> {
         if !self.layout.is_i3() {
             return Vec::new();
         }

@@ -2724,6 +2724,10 @@ impl<W: LayoutElement> Workspace<W> {
         self.update_focus_floating_tiling_after_removing(from_floating);
 
         removed.tile.stop_move_animations();
+        removed
+            .tile
+            .window_mut()
+            .hold_until_settled(self.clock.now_unadjusted());
         self.strip.insert(0, StripEntry { removed, place });
         self.update_tiling_area();
         true
@@ -2786,6 +2790,9 @@ impl<W: LayoutElement> Workspace<W> {
         let place = self.tiling.as_ref().unwrap().place_of(&focused);
         let mut out = self.tiled_remove_tile(&focused, Transaction::new());
         out.tile.stop_move_animations();
+        out.tile
+            .window_mut()
+            .hold_until_settled(self.clock.now_unadjusted());
 
         let StripEntry { removed, .. } = self.strip.remove(idx);
         self.add_removed_tile(removed, place.as_ref());
