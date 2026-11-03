@@ -60,7 +60,7 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputLayoutPart, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
-pub use crate::strip::Strip;
+pub use crate::strip::{Strip, StripShare};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
@@ -839,6 +839,16 @@ mod tests {
             Color::from_rgba8_unpremul(255, 255, 255, 255)
         );
         assert!(do_parse("strip { off; }").strip.off);
+        assert_eq!(default.share, StripShare::Output);
+        for (name, share) in [
+            ("workspace", StripShare::Workspace),
+            ("output", StripShare::Output),
+            ("all", StripShare::All),
+        ] {
+            let config = format!(r#"strip {{ share "{name}"; }}"#);
+            assert_eq!(do_parse(&config).strip.share, share);
+        }
+        assert!(Config::parse_mem(r#"strip { share "monitor"; }"#).is_err());
         assert_eq!(
             do_parse(r#"limbo { edge "bottom"; }"#).limbo.edge,
             LimboEdge::Bottom
@@ -1666,7 +1676,7 @@ mod tests {
                 },
                 side_view: SideView {
                     width: 0.25,
-                    opacity: 0.9,
+                    opacity: 1.0,
                     gap: 16.0,
                 },
                 preset_column_widths: [
@@ -2694,6 +2704,7 @@ mod tests {
                     a: 0.14901961,
                 },
                 corner_radius: 0.0,
+                share: Output,
             },
         }
         "#);

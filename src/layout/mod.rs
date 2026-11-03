@@ -39,7 +39,8 @@ use std::time::Duration;
 use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
+    Config, CornerRadius, LayoutPart, PresetSize, StripShare, Workspace as WorkspaceConfig,
+    WorkspaceReference,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
 use scrolling::{Column, ColumnWidth};
@@ -368,6 +369,9 @@ pub struct Layout<W: LayoutElement> {
     interactive_move: Option<InteractiveMoveState<W>>,
     /// Windows in limbo, newest first: hidden, outside every workspace, until they're taken out.
     limbo: Vec<RemovedTile<W>>,
+    /// Output where a window last went into the strip, which the strip stays on while every
+    /// workspace shares it.
+    shared_strip_output: Option<Output>,
     /// Ongoing drag-and-drop operation.
     dnd: Option<DndData<W>>,
     /// Clock for driving animations.
@@ -416,6 +420,8 @@ pub struct Options {
     pub deactivate_unfocused_windows: bool,
     /// Draw the outlines of i3 containers.
     pub debug_containers: bool,
+    /// Which workspaces share a strip, in i3 mode.
+    pub strip_share: niri_config::StripShare,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -688,6 +694,7 @@ impl Options {
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
             debug_containers: config.debug.show_i3_containers,
+            strip_share: config.strip.share,
         }
         .with_i3_overrides()
     }
@@ -754,6 +761,7 @@ impl<W: LayoutElement> Layout<W> {
             last_active_workspace_id: HashMap::new(),
             interactive_move: None,
             limbo: Vec::new(),
+            shared_strip_output: None,
             dnd: None,
             clock,
             update_render_elements_time: Duration::ZERO,
@@ -780,6 +788,7 @@ impl<W: LayoutElement> Layout<W> {
             last_active_workspace_id: HashMap::new(),
             interactive_move: None,
             limbo: Vec::new(),
+            shared_strip_output: None,
             dnd: None,
             clock,
             update_render_elements_time: Duration::ZERO,
@@ -2665,6 +2674,15 @@ impl<W: LayoutElement> Layout<W> {
     ) -> Option<(&W, HitType)> {
         let mon = self.monitor_for_output(output)?;
         mon.window_under(pos_within_output)
+    }
+
+    pub fn floating_window_under(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> Option<(&W, HitType)> {
+        let mon = self.monitor_for_output(output)?;
+        mon.floating_window_under(pos_within_output)
     }
 
     pub fn resize_edges_under(
@@ -5550,6 +5568,7 @@ impl<W: LayoutElement> Layout<W> {
 
         self.is_active = is_active;
 
+        self.gather_strips();
         self.assign_i3_numbers();
 
         // The overview grid leaves room for the windows in limbo.
@@ -5830,7 +5849,89 @@ impl<W: LayoutElement> Layout<W> {
         // Like limbo, leave fullscreen and maximized to keep the size simple.
         ws.set_fullscreen(window, false);
         ws.set_maximized(window, false);
-        ws.stash(window)
+        if !ws.stash(window) {
+            return false;
+        }
+
+        // A shared strip goes where the window went into it, with the window on top.
+        if let Some(output) = ws.current_output().cloned() {
+            self.shared_strip_output = Some(output);
+        }
+        self.gather_strips();
+        true
+    }
+
+    /// Moves the windows in strips onto the workspace that shows the strip they share.
+    fn gather_strips(&mut self) {
+        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+            return;
+        };
+
+        match self.options.strip_share {
+            StripShare::Workspace => (),
+            StripShare::Output => {
+                for mon in monitors {
+                    let active = mon.active_workspace_idx;
+                    if !mon.workspaces[active].is_i3() {
+                        continue;
+                    }
+                    let mut entries = Vec::new();
+                    for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                        if idx != active {
+                            entries.extend(ws.take_strip());
+                        }
+                    }
+                    if !entries.is_empty() {
+                        mon.workspaces[active].adopt_strip(entries);
+                        if mon.workspace_switch.is_none() {
+                            mon.clean_up_workspaces();
+                        }
+                    }
+                }
+            }
+            StripShare::All => {
+                // The strip stays on its output, or wherever its windows are if that's gone.
+                let has_strip = |mon: &Monitor<W>| {
+                    mon.workspaces
+                        .iter()
+                        .any(|ws| ws.strip_windows().next().is_some())
+                };
+                let home = self
+                    .shared_strip_output
+                    .as_ref()
+                    .and_then(|output| monitors.iter().position(|mon| mon.output() == output))
+                    .or_else(|| monitors.iter().position(has_strip));
+                let Some(home) = home else {
+                    return;
+                };
+                self.shared_strip_output = Some(monitors[home].output().clone());
+
+                let target = monitors[home].active_workspace_idx;
+                if !monitors[home].workspaces[target].is_i3() {
+                    return;
+                }
+                let mut entries = Vec::new();
+                for (mon_idx, mon) in monitors.iter_mut().enumerate() {
+                    let before = entries.len();
+                    for (idx, ws) in mon.workspaces.iter_mut().enumerate() {
+                        if mon_idx != home || idx != target {
+                            entries.extend(ws.take_strip());
+                        }
+                    }
+                    if entries.len() != before && mon_idx != home && mon.workspace_switch.is_none()
+                    {
+                        mon.clean_up_workspaces();
+                    }
+                }
+                if !entries.is_empty() {
+                    let mon = &mut monitors[home];
+                    mon.workspaces[target].adopt_strip(entries);
+                    if mon.workspace_switch.is_none() {
+                        mon.clean_up_workspaces();
+                    }
+                }
+            }
+        }
     }
 
     /// Takes a window out of the strip, back to its place if `to_place`, otherwise next to the

@@ -164,7 +164,7 @@ impl Default for SideView {
     fn default() -> Self {
         Self {
             width: 0.25,
-            opacity: 0.9,
+            opacity: 1.,
             gap: 16.,
         }
     }

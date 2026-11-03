@@ -2052,17 +2052,33 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn window_under(&self, pos_within_output: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        self.hit_under(pos_within_output, Workspace::window_under)
+    }
+
+    /// The floating window under the position, if any.
+    pub fn floating_window_under(
+        &self,
+        pos_within_output: Point<f64, Logical>,
+    ) -> Option<(&W, HitType)> {
+        self.hit_under(pos_within_output, Workspace::floating_window_under)
+    }
+
+    fn hit_under<'a>(
+        &'a self,
+        pos_within_output: Point<f64, Logical>,
+        under: impl Fn(&'a Workspace<W>, Point<f64, Logical>) -> Option<(&'a W, HitType)>,
+    ) -> Option<(&'a W, HitType)> {
         let (ws, geo) = self.workspace_under(pos_within_output)?;
 
         if self.overview_progress.is_some() {
             let zoom = self.overview_zoom();
             let pos_within_workspace = (pos_within_output - geo.loc).downscale(zoom);
-            let (win, hit) = ws.window_under(pos_within_workspace)?;
+            let (win, hit) = under(ws, pos_within_workspace)?;
             // During the overview animation, we cannot do input hits because we cannot really
             // represent scaled windows properly.
             Some((win, hit.to_activate()))
         } else {
-            let (win, hit) = ws.window_under(pos_within_output - geo.loc)?;
+            let (win, hit) = under(ws, pos_within_output - geo.loc)?;
             Some((win, hit.offset_win_pos(geo.loc)))
         }
     }
@@ -2187,6 +2203,37 @@ impl<W: LayoutElement> Monitor<W> {
         focus_ring: bool,
         push: &mut dyn FnMut(MonitorRenderElement<R>),
     ) {
+        self.render_workspaces_floating(ctx.r(), focus_ring, push);
+        self.render_workspaces_scrolling(ctx, focus_ring, push);
+    }
+
+    /// Renders the floating windows of the workspaces, and the insert hint.
+    pub fn render_workspaces_floating<R: NiriRenderer>(
+        &self,
+        ctx: RenderCtx<R>,
+        focus_ring: bool,
+        push: &mut dyn FnMut(MonitorRenderElement<R>),
+    ) {
+        self.render_workspace_passes(ctx, focus_ring, 0..2, push);
+    }
+
+    /// Renders the tiled windows of the workspaces.
+    pub fn render_workspaces_scrolling<R: NiriRenderer>(
+        &self,
+        ctx: RenderCtx<R>,
+        focus_ring: bool,
+        push: &mut dyn FnMut(MonitorRenderElement<R>),
+    ) {
+        self.render_workspace_passes(ctx, focus_ring, 2..4, push);
+    }
+
+    fn render_workspace_passes<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        focus_ring: bool,
+        passes: std::ops::Range<usize>,
+        push: &mut dyn FnMut(MonitorRenderElement<R>),
+    ) {
         let _span = tracy_client::span!("Monitor::render_workspaces");
 
         let scale = self.scale.fractional_scale();
@@ -2216,7 +2263,7 @@ impl<W: LayoutElement> Monitor<W> {
         // - normal floating windows
         // - scrolling windows moving between workspaces
         // - normal scrolling windows
-        for pass in 0..4 {
+        for pass in passes {
             // Don't cull when drawing windows moving between workspaces so that windows moving to
             // workspaces off-screen will still render.
             let cull = matches!(pass, 1 | 3);

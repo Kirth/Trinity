@@ -1632,6 +1632,8 @@ fn providers_annotate_windows() {
         // Cut down to size, and kept in range.
         text: Some("x".repeat(500)),
         progress: Some(7.),
+        // niri can't tell what a relative path is relative to.
+        icon: Some(std::path::PathBuf::from("favicon.png")),
         ..Default::default()
     };
     annotate(&mut f, ids[0], "claude", waiting, None);
@@ -1640,6 +1642,7 @@ fn providers_annotate_windows() {
     assert_eq!(annotations["chromium"], tabs);
     assert_eq!(annotations["claude"].text.as_ref().unwrap().len(), 120);
     assert_eq!(annotations["claude"].progress, Some(1.));
+    assert_eq!(annotations["claude"].icon, None);
 
     // Clearing one source keeps the others.
     f.niri_state().do_action(
@@ -1734,4 +1737,96 @@ fn window_cards_follow_the_strip() {
     f.niri_state()
         .do_action(niri_config::Action::OpenOverview, false);
     assert_eq!(cards(&mut f), [(ids[1], true)]);
+}
+
+fn strip_share_config(share: &str) -> Config {
+    let config = format!(r#"layout {{ layout-mode "i3"; }}; strip {{ share "{share}"; }}"#);
+    Config::parse_mem(&config).unwrap()
+}
+
+fn strip_ids_on(f: &mut Fixture, n: u8) -> Vec<crate::window::mapped::MappedId> {
+    let output = f.niri_output(n);
+    let niri = f.niri();
+    niri.layout.strip_windows(&output).map(|m| m.id()).collect()
+}
+
+fn focus_workspace(f: &mut Fixture, id: ClientId, n: u8) {
+    f.niri_state().do_action(
+        niri_config::Action::FocusWorkspace(niri_config::WorkspaceReference::Index(n)),
+        false,
+    );
+    f.double_roundtrip(id);
+}
+
+#[test]
+fn strip_follows_workspace_switch_per_output() {
+    let mut f = Fixture::with_config(i3_config());
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+    assert_eq!(strip_ids(&mut f), [ids[1]]);
+
+    // The strip comes along to the empty workspace.
+    let from = workspace_number_of(&mut f, ids[0]);
+    focus_workspace(&mut f, id, 2);
+    assert_eq!(active_workspace_number(&mut f), Some(2));
+    assert_eq!(strip_ids(&mut f), [ids[1]]);
+
+    // And back, under the window that's there.
+    focus_workspace(&mut f, id, from.unwrap());
+    assert_eq!(strip_ids(&mut f), [ids[1]]);
+    let workspaces = f.niri().layout.workspaces().count();
+    assert_eq!(workspaces, 2, "the empty workspace is cleaned up");
+}
+
+#[test]
+fn per_workspace_strip_stays_behind() {
+    let mut f = Fixture::with_config(strip_share_config("workspace"));
+    f.add_output(1, (1920, 1080));
+    let id = f.add_client();
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+    let from = workspace_number_of(&mut f, ids[0]);
+
+    focus_workspace(&mut f, id, 2);
+    assert!(strip_ids(&mut f).is_empty());
+    focus_workspace(&mut f, id, from.unwrap());
+    assert_eq!(strip_ids(&mut f), [ids[1]]);
+}
+
+#[test]
+fn shared_strip_stays_on_its_output() {
+    let mut f = Fixture::with_config(strip_share_config("all"));
+    f.add_output(1, (1920, 1080));
+    f.add_output(2, (1280, 720));
+    let id = f.add_client();
+    let output = f.niri_output(1);
+    f.niri().layout.focus_output(&output);
+
+    let _first = open_window(&mut f, id);
+    let _second = open_window(&mut f, id);
+    let ids: Vec<_> = f.niri().layout.windows().map(|(_, m)| m.id()).collect();
+    poof(&mut f, 1000);
+    assert_eq!(strip_ids_on(&mut f, 1), [ids[1]]);
+
+    // Focusing the other output leaves the strip where it is.
+    let output = f.niri_output(2);
+    f.niri().layout.focus_output(&output);
+    f.double_roundtrip(id);
+    assert_eq!(strip_ids_on(&mut f, 1), [ids[1]]);
+    assert!(strip_ids_on(&mut f, 2).is_empty());
+
+    // Setting a window aside there brings the whole strip over, the new window on top.
+    let _third = open_window(&mut f, id);
+    let _fourth = open_window(&mut f, id);
+    let fourth = focused_id(&mut f).unwrap();
+    poof(&mut f, 2000);
+    f.double_roundtrip(id);
+    assert_eq!(strip_ids_on(&mut f, 2), [fourth, ids[1]]);
+    assert!(strip_ids_on(&mut f, 1).is_empty());
 }

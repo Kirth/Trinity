@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use niri_config::{Color, LimboEdge};
 use niri_ipc::{Annotation, CardStatus};
@@ -125,6 +126,8 @@ pub struct CardDecorations {
     icons: AppIcons,
     /// Loaded icons by app id and size in physical pixels.
     icon_buffers: LabelCache<(String, i32)>,
+    /// Loaded icons from providers by path and size in physical pixels.
+    file_icon_buffers: LabelCache<(PathBuf, i32)>,
     /// Badges by text and scale.
     badges: LabelCache<(String, NotNan<f64>)>,
     /// Progress bar on each card, kept so that it keeps its element id.
@@ -142,6 +145,8 @@ pub struct CardInfo {
     pub text: Option<String>,
     /// The progress of the first provider that has one.
     pub progress: Option<f64>,
+    /// The icon of the first provider that has one.
+    pub icon: Option<PathBuf>,
 }
 
 impl CardInfo {
@@ -158,6 +163,9 @@ impl CardInfo {
             texts.extend(a.text.clone());
             info.status = info.status.max(a.status);
             info.progress = info.progress.or(a.progress);
+            if info.icon.is_none() {
+                info.icon = a.icon.clone();
+            }
         }
         info.badge = (!badges.is_empty()).then(|| badges.join(" · "));
         info.text = (!texts.is_empty()).then(|| texts.join("\n"));
@@ -308,27 +316,41 @@ impl CardDecorations {
 }
 
 impl CardDecorations {
-    /// Renders the app icon of a window in the corner of its card.
+    /// Renders the app icon of a window in the corner of its card, or the icon a provider set
+    /// instead if it loads.
     pub fn render_icon<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         mapped: &Mapped,
+        icon: Option<&Path>,
         card: Rectangle<f64, Logical>,
         edge: LimboEdge,
         scale: f64,
         opacity: f32,
     ) -> Option<PrimaryGpuTextureRenderElement> {
-        let app_id = with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone())?;
         let size = f64::min(ICON, f64::min(card.size.w, card.size.h) / 2.);
         let px = (size * scale).round() as i32;
         if px < 1 {
             return None;
         }
 
-        let buffer = self.icon_buffers.get((app_id.clone(), px), || {
-            let paths = self.icons.paths(&app_id);
-            load_icon(&paths, px, scale).ok_or_else(|| anyhow::anyhow!("no icon for {app_id}"))
-        })?;
+        let from_provider = icon.and_then(|path| {
+            self.file_icon_buffers.get((path.to_owned(), px), || {
+                load_icon(&[path.to_owned()], px, scale)
+                    .ok_or_else(|| anyhow::anyhow!("can't load {path:?}"))
+            })
+        });
+        let buffer = match from_provider {
+            Some(buffer) => buffer,
+            None => {
+                let app_id = with_toplevel_role(mapped.toplevel(), |role| role.app_id.clone())?;
+                self.icon_buffers.get((app_id.clone(), px), || {
+                    let paths = self.icons.paths(&app_id);
+                    load_icon(&paths, px, scale)
+                        .ok_or_else(|| anyhow::anyhow!("no icon for {app_id}"))
+                })?
+            }
+        };
         let texture =
             TextureBuffer::from_memory_buffer(renderer.as_gles_renderer(), &buffer).ok()?;
 
@@ -482,6 +504,7 @@ mod tests {
             badge: Some(String::from("12 tabs")),
             status: Some(CardStatus::Working),
             progress: Some(0.25),
+            icon: Some(PathBuf::from("/tmp/a.png")),
             ..Default::default()
         };
         let b = Annotation {
@@ -489,6 +512,7 @@ mod tests {
             status: Some(CardStatus::Waiting),
             text: Some(String::from("needs approval")),
             progress: Some(0.75),
+            icon: Some(PathBuf::from("/tmp/b.png")),
         };
         let info = CardInfo::from_annotations([&a, &b].into_iter());
         assert_eq!(info.badge.as_deref(), Some("12 tabs · 3"));
@@ -496,6 +520,7 @@ mod tests {
         assert_eq!(info.status, Some(CardStatus::Waiting));
         assert_eq!(info.text.as_deref(), Some("needs approval"));
         assert_eq!(info.progress, Some(0.25));
+        assert_eq!(info.icon, Some(PathBuf::from("/tmp/a.png")));
 
         assert_eq!(
             CardInfo::from_annotations(std::iter::empty()),

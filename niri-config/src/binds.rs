@@ -560,6 +560,7 @@ impl From<niri_ipc::Action> for Action {
                 status,
                 text,
                 progress,
+                icon,
                 ttl_ms,
             } => Self::AnnotateWindow {
                 id,
@@ -569,6 +570,7 @@ impl From<niri_ipc::Action> for Action {
                     status,
                     text,
                     progress,
+                    icon,
                 },
                 ttl_ms,
             },

@@ -542,7 +542,7 @@ layout {
 
 ### `side-view`
 
-Settings for side-view windows: small, translucent windows that float in a corner of the screen, like a picture-in-picture video.
+Settings for side-view windows: small windows that float in a corner of the screen, like a picture-in-picture video.
 Toggle side view for the focused window with the `toggle-side-view` action, and move it between corners with `side-view-next-corner` and `side-view-prev-corner`.
 
 `width` is the width of a side-view window as a proportion of the working area width; the height follows the window's aspect ratio.
@@ -553,7 +553,7 @@ Toggle side view for the focused window with the `toggle-side-view` action, and 
 layout {
     side-view {
         width 0.25
-        opacity 0.9
+        opacity 1.0
         gap 16
     }
 }

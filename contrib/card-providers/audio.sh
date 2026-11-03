@@ -17,7 +17,7 @@ DRY_RUN=${AUDIO_DRY_RUN:-}
 
 niri_action() {
     if [ -n "$DRY_RUN" ]; then
-        echo "niri msg action $*"
+        echo niri msg action "$@"
     else
         niri msg action "$@" >/dev/null 2>&1
     fi

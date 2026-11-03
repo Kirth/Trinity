@@ -130,24 +130,31 @@ impl IconSearch {
     }
 
     /// Adds icon files from one theme, best first, and returns the themes it inherits.
+    ///
+    /// The theme's `index.theme` is the first one found, and its directories are looked in
+    /// under every base directory: a theme spread over several, like `hicolor` with icons
+    /// installed in `~/.local/share/icons/hicolor`, has its index in only one of them.
     fn search_theme(&self, theme: &str, name: &str, rv: &mut Vec<PathBuf>) -> Vec<String> {
-        let mut inherits = Vec::new();
-        for base in &self.icon_dirs {
-            let root = base.join(theme);
-            let Ok(index) = fs::read_to_string(root.join("index.theme")) else {
-                continue;
-            };
-            if inherits.is_empty() {
-                if let Some(value) = ini_value(&index, "Icon Theme", "Inherits") {
-                    inherits = value.split(',').map(|s| s.trim().to_owned()).collect();
-                }
-            }
+        let Some(index) = self
+            .icon_dirs
+            .iter()
+            .find_map(|base| fs::read_to_string(base.join(theme).join("index.theme")).ok())
+        else {
+            return Vec::new();
+        };
+        let inherits = ini_value(&index, "Icon Theme", "Inherits")
+            .map(|value| value.split(',').map(|s| s.trim().to_owned()).collect())
+            .unwrap_or_default();
 
-            let mut dirs = theme_dirs(&index);
-            dirs.sort_by_key(|dir| dir.rank());
-            for dir in dirs {
+        let mut dirs = theme_dirs(&index);
+        dirs.sort_by_key(|dir| dir.rank());
+        for dir in dirs {
+            for base in &self.icon_dirs {
                 for ext in ["svg", "png"] {
-                    let path = root.join(&dir.path).join(format!("{name}.{ext}"));
+                    let path = base
+                        .join(theme)
+                        .join(&dir.path)
+                        .join(format!("{name}.{ext}"));
                     if path.is_file() {
                         rv.push(path);
                     }
@@ -409,6 +416,36 @@ mod tests {
         assert_eq!(
             search.find("/abs/icon.png"),
             [PathBuf::from("/abs/icon.png")]
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn theme_icons_are_found_in_base_dirs_without_an_index() {
+        let dir = temp_dir("bases");
+        let system = dir.join("system/icons");
+        fs::create_dir_all(system.join("hicolor")).unwrap();
+        fs::write(
+            system.join("hicolor/index.theme"),
+            "[Icon Theme]\nDirectories=32x32/apps,64x64/apps\n\n\
+             [32x32/apps]\nSize=32\n\n[64x64/apps]\nSize=64\n",
+        )
+        .unwrap();
+        touch(&system.join("hicolor/32x32/apps/app.png"));
+        // The user's own icons, with no index.theme of their own.
+        let user = dir.join("user/icons");
+        touch(&user.join("hicolor/64x64/apps/app.png"));
+
+        let search = IconSearch {
+            icon_dirs: vec![user.clone(), system.clone()],
+            ..Default::default()
+        };
+        assert_eq!(
+            search.find("app"),
+            [
+                user.join("hicolor/64x64/apps/app.png"),
+                system.join("hicolor/32x32/apps/app.png"),
+            ]
         );
         fs::remove_dir_all(dir).unwrap();
     }

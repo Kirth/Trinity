@@ -53,6 +53,7 @@
 #![warn(missing_docs)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -515,6 +516,11 @@ pub enum Action {
         /// Progress from 0 to 1, shown as a bar along the bottom of the card.
         #[cfg_attr(feature = "clap", arg(long))]
         progress: Option<f64>,
+        /// Absolute path to an image shown instead of the app icon, like a site's favicon.
+        ///
+        /// niri keeps each file it loaded, so write a changed image to a new path.
+        #[cfg_attr(feature = "clap", arg(long))]
+        icon: Option<PathBuf>,
         /// Clear the annotation after this many milliseconds, unless it's set again.
         #[cfg_attr(feature = "clap", arg(long))]
         ttl_ms: Option<u64>,
@@ -1560,6 +1566,9 @@ pub struct Annotation {
     pub text: Option<String>,
     /// Progress from 0 to 1, shown as a bar along the bottom of the card.
     pub progress: Option<f64>,
+    /// Absolute path to an image shown instead of the app icon.
+    #[serde(default)]
+    pub icon: Option<PathBuf>,
 }
 
 /// State of a window, as a provider sees it.

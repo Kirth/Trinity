@@ -929,6 +929,29 @@ fn closing_the_last_laid_out_window_keeps_the_strip() {
 
 #[test]
 fn strip_is_per_workspace() {
+    let options = Options {
+        strip_share: niri_config::StripShare::Workspace,
+        ..i3_options()
+    };
+    let layout = check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            add_window(1),
+            add_window(2),
+            Op::Stash(1),
+            REFRESH,
+            Op::FocusI3Workspace(2),
+            add_window(3),
+            REFRESH,
+        ],
+    );
+    assert!(strip(&layout).is_empty());
+    assert!(layout.is_in_strip(&1));
+}
+
+#[test]
+fn strip_is_shared_per_output() {
     let layout = tiling_layout([
         add_window(1),
         add_window(2),
@@ -936,9 +959,9 @@ fn strip_is_per_workspace() {
         REFRESH,
         Op::FocusI3Workspace(2),
         add_window(3),
+        REFRESH,
     ]);
-    assert!(strip(&layout).is_empty());
-    assert!(layout.is_in_strip(&1));
+    assert_eq!(strip(&layout), [1]);
 }
 
 #[test]

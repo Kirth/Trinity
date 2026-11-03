@@ -15,6 +15,21 @@ pub struct Strip {
     pub rim_color: Color,
     /// Radius of the panel's corners, in logical pixels.
     pub corner_radius: f64,
+    /// Which workspaces share a strip.
+    pub share: StripShare,
+}
+
+/// Which workspaces share a strip.
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StripShare {
+    /// Each workspace has its own strip.
+    Workspace,
+    /// Each output has one strip, which follows its active workspace.
+    #[default]
+    Output,
+    /// There is one strip, which follows the active workspace of the output where a window last
+    /// went into it.
+    All,
 }
 
 impl Default for Strip {
@@ -32,6 +47,7 @@ impl Default for Strip {
             }),
             rim_color: Color::from_rgba8_unpremul(0xff, 0xff, 0xff, 0x26),
             corner_radius: 0.,
+            share: StripShare::default(),
         }
     }
 }
@@ -50,6 +66,8 @@ pub struct StripPart {
     pub rim_color: Option<Color>,
     #[knuffel(child, unwrap(argument))]
     pub corner_radius: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub share: Option<StripShare>,
 }
 
 impl MergeWith<StripPart> for Strip {
@@ -66,6 +84,9 @@ impl MergeWith<StripPart> for Strip {
         }
         if let Some(x) = part.corner_radius {
             self.corner_radius = x.0;
+        }
+        if let Some(x) = part.share {
+            self.share = x;
         }
     }
 }

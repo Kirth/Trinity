@@ -628,6 +628,8 @@ impl Mapped {
             .progress
             .filter(|p| p.is_finite())
             .map(|p| p.clamp(0., 1.));
+        // niri runs elsewhere than the provider, so a relative path means nothing to it.
+        annotation.icon = annotation.icon.filter(|path| path.is_absolute());
 
         let old = self.annotations.get(source);
         let changed = old.is_none_or(|(a, _)| *a != annotation);

@@ -576,6 +576,7 @@ impl Drawer {
                     self.decorations.render_icon(
                         ctx.renderer,
                         mapped,
+                        info.icon.as_deref(),
                         slot.card,
                         placement.edge,
                         scale,

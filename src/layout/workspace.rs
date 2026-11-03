@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -141,7 +142,7 @@ pub const STRIP_WIDTH: f64 = 216.;
 
 /// A window set aside in a workspace's strip.
 #[derive(Debug)]
-struct StripEntry<W: LayoutElement> {
+pub(super) struct StripEntry<W: LayoutElement> {
     removed: RemovedTile<W>,
     /// Where the window was in the tree, to put it back there.
     place: Option<TilingPlace>,
@@ -2444,20 +2445,23 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
         // This logic is consistent with tiles_with_render_positions().
-        if self.is_floating_visible() {
-            if let Some(rv) = self
-                .floating
-                .tiles_with_render_positions()
-                .find_map(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
-            {
-                return Some(rv);
-            }
+        if let Some(rv) = self.floating_window_under(pos) {
+            return Some(rv);
         }
 
         if let Some(tiling) = &self.tiling {
             return tiling.window_under(pos);
         }
         self.scrolling.window_under(pos)
+    }
+
+    pub fn floating_window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        if !self.is_floating_visible() {
+            return None;
+        }
+        self.floating
+            .tiles_with_render_positions()
+            .find_map(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
     }
 
     pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
@@ -2817,6 +2821,40 @@ impl<W: LayoutElement> Workspace<W> {
         let idx = idx.min(self.strip.len());
         self.strip.insert(idx, entry);
         true
+    }
+
+    /// Takes every window out of the strip, to hand them to the workspace that shares it.
+    pub(super) fn take_strip(&mut self) -> Vec<StripEntry<W>> {
+        if self.strip.is_empty() {
+            return Vec::new();
+        }
+        let entries = mem::take(&mut self.strip);
+        if let Some(output) = &self.output {
+            for entry in &entries {
+                entry.removed.tile.window().output_leave(output);
+            }
+        }
+        self.update_tiling_area();
+        entries
+    }
+
+    /// Puts windows from the strip of another workspace below the ones in this strip.
+    pub(super) fn adopt_strip(&mut self, entries: Vec<StripEntry<W>>) {
+        if entries.is_empty() {
+            return;
+        }
+        let scale = self.scale.fractional_scale();
+        for mut entry in entries {
+            // The place was in the tree of the other workspace.
+            entry.place = None;
+            entry
+                .removed
+                .tile
+                .update_config(self.view_size, scale, self.options.clone());
+            self.enter_output_for_window(entry.removed.tile.window());
+            self.strip.push(entry);
+        }
+        self.update_tiling_area();
     }
 
     /// Puts a removed tile back on this workspace, at a place in the tree if it still fits,

@@ -3694,12 +3694,6 @@ impl Niri {
                 .map(mapped_hit_data)
         };
 
-        // The limbo drawer is drawn above everything below.
-        if let Some(id) = self.drawer_window_under(output, pos_within_output) {
-            rv.drawer = Some(id);
-            return rv;
-        }
-
         let mon = self.layout.monitor_for_output(output).unwrap();
 
         let mut under =
@@ -3710,6 +3704,13 @@ impl Niri {
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
+            if under.is_none() {
+                if let Some(id) = self.drawer_window_under(output, pos_within_output) {
+                    rv.drawer = Some(id);
+                    return rv;
+                }
+            }
+
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(window_under)
@@ -3727,7 +3728,20 @@ impl Niri {
 
             under = under
                 .or_else(|| layer_popup_under(Layer::Top))
-                .or_else(|| layer_toplevel_under(Layer::Top));
+                .or_else(|| layer_toplevel_under(Layer::Top))
+                .or_else(|| {
+                    self.layout
+                        .floating_window_under(output, pos_within_output)
+                        .map(mapped_hit_data)
+                });
+
+            // The limbo drawer is drawn below the floating windows, above everything else.
+            if under.is_none() {
+                if let Some(id) = self.drawer_window_under(output, pos_within_output) {
+                    rv.drawer = Some(id);
+                    return rv;
+                }
+            }
 
             under = under.or_else(interactive_moved_window_under);
 
@@ -4651,9 +4665,7 @@ impl Niri {
             }
         }
 
-        // Then, the limbo drawer or the strips, below the hints so that their cards don't cover
-        // their labels.
-        // In the overview, the row of cards fades in with it.
+        // In the overview, the limbo drawer or the strips fade in with it.
         let drawer_alpha = if self.layout.is_overview_open() {
             self.layout
                 .monitor_for_output(output)
@@ -4661,19 +4673,6 @@ impl Niri {
         } else {
             1.
         };
-        for (windows, placement) in self.card_groups(output) {
-            self.drawer.render(
-                ctx.r(),
-                output,
-                output_size(output),
-                &windows,
-                placement,
-                self.config.borrow().layout.border.urgent_color,
-                output.current_scale().fractional_scale(),
-                drawer_alpha,
-                &mut |elem| push(elem.into()),
-            );
-        }
 
         // Then, the resize mode label.
         if self.resize_mode.is_active() {
@@ -4727,6 +4726,25 @@ impl Niri {
                 ));
             }};
         }
+        // The cards of the limbo drawer or the strips, below the hints so that they don't cover
+        // their labels, and below the floating windows.
+        macro_rules! push_cards {
+            () => {{
+                for (windows, placement) in self.card_groups(output) {
+                    self.drawer.render(
+                        ctx.r(),
+                        output,
+                        output_size(output),
+                        &windows,
+                        placement,
+                        self.config.borrow().layout.border.urgent_color,
+                        output.current_scale().fractional_scale(),
+                        drawer_alpha,
+                        &mut |elem| push(elem.into()),
+                    );
+                }
+            }};
+        }
         macro_rules! push_normal_from_layer {
             ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $push:expr) => {{
                 self.render_layer_normal(
@@ -4766,6 +4784,8 @@ impl Niri {
 
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
+            push_cards!();
+
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
             push_popups_from_layer!(Layer::Top);
@@ -4783,6 +4803,11 @@ impl Niri {
         } else {
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
+
+            // Floating windows go above the strips, so that the strips don't cut them off.
+            mon.render_workspaces_floating(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+
+            push_cards!();
 
             // The panels behind the strips, below the top layer so that a bar shows over them.
             for (_, placement) in self.card_groups(output) {
@@ -4824,7 +4849,7 @@ impl Niri {
                 push_popups_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
             }
 
-            mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+            mon.render_workspaces_scrolling(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
