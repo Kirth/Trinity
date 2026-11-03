@@ -1830,3 +1830,39 @@ fn shared_strip_stays_on_its_output() {
     assert_eq!(strip_ids_on(&mut f, 2), [fourth, ids[1]]);
     assert!(strip_ids_on(&mut f, 1).is_empty());
 }
+
+#[test]
+fn output_can_put_its_strip_at_the_bottom() {
+    let config = r#"
+        layout { layout-mode "i3"; }
+        strip { size 300; }
+        output "headless-2" { strip { position "bottom"; size "25%"; }; }
+    "#;
+    let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
+    f.add_output(1, (1920, 1080));
+    f.add_output(2, (1080, 1920));
+    let id = f.add_client();
+
+    for n in [1, 2] {
+        let output = f.niri_output(n);
+        f.niri().layout.focus_output(&output);
+        let _first = open_window(&mut f, id);
+        let _second = open_window(&mut f, id);
+        f.niri_state()
+            .do_action(niri_config::Action::MoveWindowToLimbo, false);
+        f.double_roundtrip(id);
+        assert_eq!(strip_ids_on(&mut f, n).len(), 1);
+    }
+
+    let output = f.niri_output(1);
+    let placement = f.niri().drawer_placement(&output);
+    assert_eq!(placement.edge, niri_config::LimboEdge::Right);
+    assert_eq!(placement.strip.unwrap().size.w, 300.);
+
+    let output = f.niri_output(2);
+    let placement = f.niri().drawer_placement(&output);
+    assert_eq!(placement.edge, niri_config::LimboEdge::Bottom);
+    let band = placement.strip.unwrap();
+    assert_eq!(band.size, Size::from((1080., 480.)));
+    assert_eq!(band.loc.y + band.size.h, 1920.);
+}

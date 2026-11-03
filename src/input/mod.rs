@@ -1004,9 +1004,13 @@ impl State {
             return false;
         }
 
-        // Along the bottom edge, sideways scrolling cycles too.
-        let edge = self.niri.config.borrow().limbo.edge;
-        let amount = if edge == niri_config::LimboEdge::Bottom && vertical == 0. {
+        // Along the top and bottom edges, sideways scrolling cycles too.
+        let edge = self.niri.drawer_placement(&output).edge;
+        let along_row = matches!(
+            edge,
+            niri_config::LimboEdge::Top | niri_config::LimboEdge::Bottom
+        );
+        let amount = if along_row && vertical == 0. {
             horizontal
         } else {
             vertical

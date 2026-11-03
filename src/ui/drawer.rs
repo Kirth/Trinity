@@ -14,7 +14,6 @@ use niri_config::{Color, CornerRadius, LimboEdge};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use crate::layout::workspace::STRIP_WIDTH;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::RenderCtx;
@@ -53,6 +52,8 @@ const ROW_MAX_ASPECT: f64 = 2.5;
 const EDGE_DWELL: Duration = Duration::from_millis(150);
 /// Room between the cards in a strip and the edges of its band, in logical pixels.
 const STRIP_PADDING: f64 = 14.;
+/// How many times as wide as high a card in a strip at the top or bottom may be.
+const ROW_STRETCH: f64 = 2.;
 /// How much of a card tucked behind another in a stack shows, as a share of its height.
 const STACK_PEEK: f64 = 0.35;
 /// Least of a tucked card that shows, in logical pixels.
@@ -87,12 +88,16 @@ pub struct DrawerPlacement {
     /// In the overview: the band below the workspaces where the cards show in a row, in
     /// output-local coordinates.
     pub overview: Option<Rectangle<f64, Logical>>,
-    /// For a workspace strip: the band at the right edge where the cards show in a column, in
-    /// output-local coordinates.
+    /// For a workspace strip: the band along its edge where the cards show, in a column at the
+    /// sides and in a row at the top and bottom, in output-local coordinates.
     pub strip: Option<Rectangle<f64, Logical>>,
-    /// For a workspace strip: where its panel goes, from the band to the right edge and from the
-    /// top to the bottom of the screen, in output-local coordinates.
+    /// For a workspace strip: where its panel goes, from the band to the edge and all along it,
+    /// in output-local coordinates.
     pub strip_panel: Option<Rectangle<f64, Logical>>,
+    /// For a workspace strip: how much it's scaled down, as in the overview.
+    pub zoom: f64,
+    /// For a workspace strip: its look.
+    pub style: niri_config::Strip,
 }
 
 #[derive(Debug, Default)]
@@ -294,6 +299,8 @@ impl Drawer {
         if let Some(band) = placement.strip {
             return strip_slots(
                 band,
+                placement.edge,
+                placement.zoom,
                 items,
                 self.offset,
                 self.dragging_on(output),
@@ -617,11 +624,11 @@ impl Drawer {
         renderer: &mut impl NiriRenderer,
         output: &Output,
         placement: DrawerPlacement,
-        style: &niri_config::Strip,
         scale: f64,
         alpha: f32,
         push: &mut dyn FnMut(BorderRenderElement),
     ) {
+        let style = &placement.style;
         let Some(area) = placement.strip_panel else {
             return;
         };
@@ -629,18 +636,26 @@ impl Drawer {
             return;
         }
         // Scaled down with the band, as in the overview.
-        let zoom = area.size.w / STRIP_WIDTH;
-        let panel = panel_rect(area, zoom)
+        let zoom = placement.zoom;
+        let edge = placement.edge;
+        let panel = panel_rect(area, edge, zoom)
             .to_physical_precise_round(scale)
             .to_logical(scale);
 
         // Round only the corners facing into the screen.
         let r = style.corner_radius as f32 * zoom as f32;
+        let (left, right, top, bottom) = match edge {
+            LimboEdge::Left => (false, true, false, false),
+            LimboEdge::Right => (true, false, false, false),
+            LimboEdge::Top => (false, false, false, true),
+            LimboEdge::Bottom => (false, false, true, false),
+        };
+        let corner = |round: bool| if round { r } else { 0. };
         let radius = CornerRadius {
-            top_left: r,
-            top_right: 0.,
-            bottom_right: 0.,
-            bottom_left: r,
+            top_left: corner(left || top),
+            top_right: corner(right || top),
+            bottom_right: corner(right || bottom),
+            bottom_left: corner(left || bottom),
         }
         .fit_to(panel.size.w as f32, panel.size.h as f32);
         let (from, to, angle, interpolation) = match style.background_gradient {
@@ -726,6 +741,7 @@ pub fn edge_pointer(
     let at_edge = match edge {
         LimboEdge::Right => pos.x >= output_size.w - 1.,
         LimboEdge::Left => pos.x < 1.,
+        LimboEdge::Top => pos.y < 1.,
         LimboEdge::Bottom => pos.y >= output_size.h - 1.,
     };
     if at_edge && (start..=end).contains(&along) {
@@ -831,24 +847,78 @@ fn overview_slots(
         .collect()
 }
 
-/// Where the panel behind a strip goes: over the whole panel area, and past its top, right and
-/// bottom edges by the width of the rim, so that only the rim facing into the screen shows.
-fn panel_rect(area: Rectangle<f64, Logical>, zoom: f64) -> Rectangle<f64, Logical> {
+/// Where the panel behind a strip goes: over the whole panel area, and past its other edges by
+/// the width of the rim, so that only the rim facing into the screen shows.
+fn panel_rect(
+    area: Rectangle<f64, Logical>,
+    edge: LimboEdge,
+    zoom: f64,
+) -> Rectangle<f64, Logical> {
     let rim = f64::from(PANEL_RIM) * zoom;
-    Rectangle::new(
-        area.loc - Point::from((0., rim)),
-        area.size + Size::from((rim, rim * 2.)),
-    )
+    let mut rect = Rectangle::new(
+        area.loc - Point::from((rim, rim)),
+        area.size + Size::from((rim * 2., rim * 2.)),
+    );
+    match edge {
+        LimboEdge::Left => rect.size.w -= rim,
+        LimboEdge::Right => {
+            rect.loc.x += rim;
+            rect.size.w -= rim;
+        }
+        LimboEdge::Top => rect.size.h -= rim,
+        LimboEdge::Bottom => {
+            rect.loc.y += rim;
+            rect.size.h -= rim;
+        }
+    }
+    rect
 }
 
-/// Where the cards go in a workspace strip: in a column from the top of the band, as wide as the
-/// band allows. The cards of one app stack together, like a pile of paper: the newest in front,
-/// the others tucked behind it showing their bottom.
+/// Where the cards go in a workspace strip along this edge: in a column at the sides, in a row
+/// at the top and bottom. `zoom` is how much the strip is scaled down, as in the overview.
+fn strip_slots(
+    band: Rectangle<f64, Logical>,
+    edge: LimboEdge,
+    zoom: f64,
+    items: &[Item],
+    offset: usize,
+    drag: Option<(MappedId, f64)>,
+    spread: impl Fn(u64) -> f64,
+) -> Vec<Slot> {
+    if matches!(edge, LimboEdge::Left | LimboEdge::Right) {
+        return column_slots(band, zoom, 1., items, offset, drag, spread);
+    }
+
+    // A row is a column turned on its side. Cards may be wider than high in a row, as they may
+    // not be higher than wide in a column, or wide windows would get small cards.
+    let flip_point = |p: Point<f64, Logical>| Point::from((p.y, p.x));
+    let flip_size = |s: Size<f64, Logical>| Size::from((s.h, s.w));
+    let flip = |r: Rectangle<f64, Logical>| Rectangle::new(flip_point(r.loc), flip_size(r.size));
+    let items: Vec<_> = items
+        .iter()
+        .map(|item| Item {
+            size: flip_size(item.size),
+            ..*item
+        })
+        .collect();
+    let mut slots = column_slots(flip(band), zoom, ROW_STRETCH, &items, offset, drag, spread);
+    for slot in &mut slots {
+        slot.card = flip(slot.card);
+        slot.hit = flip(slot.hit);
+    }
+    slots
+}
+
+/// Where the cards go in a column from the top of the band, as wide as the band allows, and at
+/// most `stretch` times as high. The cards of one app stack together, like a pile of paper: the
+/// newest in front, the others tucked behind it showing their bottom.
 ///
 /// A stack spreads out, by how far `spread` says, over the stacks below it rather than pushing
 /// them away, so that nothing else moves.
-fn strip_slots(
+fn column_slots(
     band: Rectangle<f64, Logical>,
+    zoom: f64,
+    stretch: f64,
     items: &[Item],
     offset: usize,
     drag: Option<(MappedId, f64)>,
@@ -858,8 +928,6 @@ fn strip_slots(
         return Vec::new();
     }
 
-    // Scaled down with the band, as in the overview.
-    let zoom = band.size.w / STRIP_WIDTH;
     let pad = STRIP_PADDING * zoom;
     let w = (band.size.w - 2. * pad).max(1.);
     let room = (band.size.h - 2. * pad).max(1.);
@@ -875,10 +943,10 @@ fn strip_slots(
         }
     }
 
-    // Each card is as wide as the band, at most as high as wide; further back in a stack, a bit
-    // smaller.
+    // Each card is as wide as the band, at most `stretch` times as high; further back in a
+    // stack, a bit smaller.
     let size_of = |item: &Item, depth: usize, scale: f64| {
-        let h = (w * item.size.h / item.size.w).clamp(1., w) * scale;
+        let h = (w * item.size.h / item.size.w).clamp(1., w * stretch) * scale;
         let size: Size<f64, Logical> = Size::from(((h * item.size.w / item.size.h).min(w), h));
         let shrink = (1. - STACK_SHRINK * depth as f64).max(0.5);
         size.upscale(shrink)
@@ -1100,8 +1168,9 @@ fn slots(
         return Vec::new();
     }
 
-    // At the left and right edges, cards stack top to bottom; at the bottom, left to right.
-    let in_row = placement.edge == LimboEdge::Bottom;
+    // At the left and right edges, cards stack top to bottom; at the top and bottom, left to
+    // right.
+    let in_row = matches!(placement.edge, LimboEdge::Top | LimboEdge::Bottom);
     let along = |size: Size<f64, Logical>| if in_row { size.w } else { size.h };
 
     // Shrink the cards if they don't all fit.
@@ -1179,6 +1248,12 @@ fn slots(
                     let gap = Rectangle::new(Point::from((0., pos)), Size::from((shown, size.h)));
                     (card, gap)
                 }
+                LimboEdge::Top => {
+                    let y = shown - depth;
+                    let card = Rectangle::new(Point::from((pos, y)), size);
+                    let gap = Rectangle::new(Point::from((pos, 0.)), Size::from((size.w, shown)));
+                    (card, gap)
+                }
                 LimboEdge::Bottom => {
                     let y = output_size.h - shown;
                     let card = Rectangle::new(Point::from((pos, y)), size);
@@ -1228,6 +1303,7 @@ mod tests {
     }
 
     const MARGIN: f64 = 19.;
+    const STRIP_SIZE: f64 = 216.;
 
     fn at(edge: LimboEdge) -> DrawerPlacement {
         DrawerPlacement {
@@ -1236,6 +1312,8 @@ mod tests {
             overview: None,
             strip: None,
             strip_panel: None,
+            zoom: 1.,
+            style: niri_config::Strip::default(),
         }
     }
 
@@ -1708,13 +1786,13 @@ mod tests {
 
     #[test]
     fn strip_cards_keep_their_padding() {
-        let band = Rectangle::new(Point::from((1704., 40.)), Size::from((STRIP_WIDTH, 1040.)));
+        let band = Rectangle::new(Point::from((1704., 40.)), Size::from((STRIP_SIZE, 1040.)));
         let ids = ids(2);
-        let slots = strip_slots(band, &items(&ids), 0, None, |_| 0.);
+        let slots = strip_slots(band, LimboEdge::Right, 1., &items(&ids), 0, None, |_| 0.);
 
         // As wide as the band minus the padding on both sides, starting the padding down.
         let card = slots[0].card;
-        assert_eq!(card.size.w, STRIP_WIDTH - 2. * STRIP_PADDING);
+        assert_eq!(card.size.w, STRIP_SIZE - 2. * STRIP_PADDING);
         assert_eq!(card.loc.x, band.loc.x + STRIP_PADDING);
         assert_eq!(card.loc.y, band.loc.y + STRIP_PADDING);
         assert_eq!(slots[1].card.loc.y, card.loc.y + card.size.h + GAP);
@@ -1722,9 +1800,9 @@ mod tests {
 
     #[test]
     fn strip_cards_shrink_to_fit_the_padded_band() {
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 400.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 400.)));
         let ids = ids(4);
-        let slots = strip_slots(band, &items(&ids), 0, None, |_| 0.);
+        let slots = strip_slots(band, LimboEdge::Right, 1., &items(&ids), 0, None, |_| 0.);
         let last = slots.last().unwrap().card;
         assert!(last.loc.y + last.size.h <= band.size.h - STRIP_PADDING + 0.001);
     }
@@ -1733,11 +1811,47 @@ mod tests {
     fn panel_runs_past_the_screen_edges() {
         let area = Rectangle::new(Point::from((1704., 0.)), Size::from((216., 1080.)));
         let rim = f64::from(PANEL_RIM);
-        let panel = panel_rect(area, 1.);
+        let panel = panel_rect(area, LimboEdge::Right, 1.);
         // Starts at the strip, and goes past the top, right and bottom by the rim.
         assert_eq!(panel.loc, Point::from((1704., -rim)));
         assert_eq!(panel.loc.x + panel.size.w, 1920. + rim);
         assert_eq!(panel.loc.y + panel.size.h, 1080. + rim);
+    }
+
+    #[test]
+    fn bottom_strip_cards_go_in_a_row() {
+        let band = Rectangle::new(Point::from((0., 880.)), Size::from((1080., 200.)));
+        let ids = ids(3);
+        let mut items = items(&ids);
+        // A wide window gets a card wider than high, filling the height of the band.
+        items[0].size = Size::from((1920., 1080.));
+        let slots = strip_slots(band, LimboEdge::Bottom, 1., &items, 0, None, |_| 0.);
+        assert_eq!(slots.len(), 3);
+        let first = slots[0].card;
+        assert_eq!(first.size.h, 200. - 2. * STRIP_PADDING);
+        assert!(first.size.w > first.size.h);
+        assert_eq!(first.loc.x, band.loc.x + STRIP_PADDING);
+        for pair in slots.windows(2) {
+            let (a, b) = (pair[0].card, pair[1].card);
+            assert!(a.loc.x + a.size.w <= b.loc.x);
+        }
+        for slot in &slots {
+            assert!(band.contains_rect(slot.card));
+        }
+    }
+
+    #[test]
+    fn panel_runs_past_the_other_screen_edges() {
+        let rim = f64::from(PANEL_RIM);
+        let area = Rectangle::new(Point::from((0., 880.)), Size::from((1080., 1040.)));
+        let panel = panel_rect(area, LimboEdge::Bottom, 1.);
+        assert_eq!(panel.loc, Point::from((-rim, 880.)));
+        assert_eq!(panel.size, Size::from((1080. + 2. * rim, 1040. + rim)));
+
+        let area = Rectangle::new(Point::from((0., 0.)), Size::from((216., 1080.)));
+        let panel = panel_rect(area, LimboEdge::Left, 1.);
+        assert_eq!(panel.loc, Point::from((-rim, -rim)));
+        assert_eq!(panel.loc.x + panel.size.w, 216.);
     }
 
     /// Items for these windows, all of the same app but the last.
@@ -1752,9 +1866,17 @@ mod tests {
 
     #[test]
     fn cards_of_one_app_stack() {
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 1000.)));
         let ids = ids(4);
-        let slots = strip_slots(band, &same_app_items(&ids), 0, None, |_| 0.);
+        let slots = strip_slots(
+            band,
+            LimboEdge::Right,
+            1.,
+            &same_app_items(&ids),
+            0,
+            None,
+            |_| 0.,
+        );
 
         // The front card shows whole, with the count of the stack.
         let front = slots[0];
@@ -1786,11 +1908,13 @@ mod tests {
 
     #[test]
     fn a_spread_stack_lies_over_the_others() {
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 1000.)));
         let ids = ids(4);
         let items = same_app_items(&ids);
-        let folded = strip_slots(band, &items, 0, None, |_| 0.);
-        let spread = strip_slots(band, &items, 0, None, |group| f64::from(group == 1));
+        let folded = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |_| 0.);
+        let spread = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |group| {
+            f64::from(group == 1)
+        });
 
         // The stack comes first, its cards whole and apart, from where its front card was.
         assert!(spread[..3]
@@ -1812,13 +1936,13 @@ mod tests {
     #[test]
     fn a_spread_stack_stays_inside_the_band() {
         // Tall cards: three of them spread out don't fit below the front card.
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 500.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 500.)));
         let ids = ids(3);
         let mut items = items(&ids);
         for item in &mut items {
             item.group = 1;
         }
-        let spread = strip_slots(band, &items, 0, None, |_| 1.);
+        let spread = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |_| 1.);
         let bottom = spread
             .iter()
             .map(|slot| slot.card.loc.y + slot.card.size.h)
@@ -1833,22 +1957,26 @@ mod tests {
 
     #[test]
     fn spreading_moves_the_cards_part_of_the_way() {
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 1000.)));
         let ids = ids(3);
         let items = same_app_items(&ids);
-        let folded = strip_slots(band, &items, 0, None, |_| 0.);
-        let half = strip_slots(band, &items, 0, None, |group| 0.5 * f64::from(group == 1));
-        let spread = strip_slots(band, &items, 0, None, |group| f64::from(group == 1));
+        let folded = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |_| 0.);
+        let half = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |group| {
+            0.5 * f64::from(group == 1)
+        });
+        let spread = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |group| {
+            f64::from(group == 1)
+        });
         let y = |slots: &[Slot]| slots[1].card.loc.y;
         assert!(y(&folded) < y(&half) && y(&half) < y(&spread));
     }
 
     #[test]
     fn the_pointer_keeps_a_stack_spread_between_its_cards() {
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 1000.)));
         let ids = ids(4);
         let items = same_app_items(&ids);
-        let folded = strip_slots(band, &items, 0, None, |_| 0.);
+        let folded = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |_| 0.);
 
         // Hovering a card of a stack spreads it; a lone card spreads nothing.
         let on = |slot: &Slot| slot.card.loc + slot.card.size.downscale(2.).to_point();
@@ -1862,7 +1990,9 @@ mod tests {
         );
 
         // In the gap between two spread cards, it stays spread, even over another card.
-        let spread = strip_slots(band, &items, 0, None, |group| f64::from(group == 1));
+        let spread = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |group| {
+            f64::from(group == 1)
+        });
         let gap = Point::from((
             spread[1].card.loc.x + 20.,
             spread[1].card.loc.y + spread[1].card.size.h + GAP / 2.,
@@ -1898,14 +2028,14 @@ mod tests {
 
     #[test]
     fn stacks_keep_the_order_of_their_newest_window() {
-        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_WIDTH, 1000.)));
+        let band = Rectangle::new(Point::from((0., 0.)), Size::from((STRIP_SIZE, 1000.)));
         let ids = ids(3);
         let mut items = items(&ids);
         // Newest first: app A, app B, app A again.
         items[0].group = 1;
         items[1].group = 2;
         items[2].group = 1;
-        let order: Vec<_> = strip_slots(band, &items, 0, None, |_| 0.)
+        let order: Vec<_> = strip_slots(band, LimboEdge::Right, 1., &items, 0, None, |_| 0.)
             .iter()
             .map(|slot| slot.id)
             .collect();

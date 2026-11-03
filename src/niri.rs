@@ -2028,13 +2028,7 @@ impl State {
                     continue;
                 }
 
-                let mut layout_config = config.and_then(|c| c.layout.clone().map(|x| x.0));
-                // Support the deprecated non-layout background-color key.
-                if let Some(layout) = &mut layout_config {
-                    if layout.background_color.is_none() {
-                        layout.background_color = config.and_then(|c| c.background_color);
-                    }
-                }
+                let layout_config = config.and_then(output_layout_config);
 
                 if mon.update_layout_config(layout_config) {
                     // Also redraw these; if anything, the background color could've changed.
@@ -3123,13 +3117,7 @@ impl Niri {
             transform = Transform::Flipped180;
         }
 
-        let mut layout_config = c.and_then(|c| c.layout.clone().map(|x| x.0));
-        // Support the deprecated non-layout background-color key.
-        if let Some(layout) = &mut layout_config {
-            if layout.background_color.is_none() {
-                layout.background_color = c.and_then(|c| c.background_color);
-            }
-        }
+        let layout_config = c.and_then(output_layout_config);
         drop(config);
 
         // Set scale and transform before adding to the layout since that will read the output size.
@@ -4815,7 +4803,6 @@ impl Niri {
                     ctx.renderer,
                     output,
                     placement,
-                    &self.config.borrow().strip,
                     output_scale.x,
                     drawer_alpha,
                     &mut |elem| {
@@ -6833,10 +6820,12 @@ impl Niri {
                     Rectangle::new(geo.loc + area.loc.upscale(zoom), area.size.upscale(zoom))
                 };
                 let placement = DrawerPlacement {
-                    edge: LimboEdge::Right,
+                    edge: ws.strip_edge(),
                     overview: None,
                     strip: Some(scaled(ws.strip_area()?)),
                     strip_panel: ws.strip_panel_area().map(scaled),
+                    zoom,
+                    style: ws.strip_style(),
                     ..placement
                 };
                 Some((ws.strip_windows().collect(), placement))
@@ -6873,6 +6862,7 @@ impl Niri {
         let neighbour = match self.config.borrow().limbo.edge {
             LimboEdge::Left => self.output_left_of(output),
             LimboEdge::Right => self.output_right_of(output),
+            LimboEdge::Top => self.output_up_of(output),
             LimboEdge::Bottom => self.output_down_of(output),
         };
         if neighbour.is_some() {
@@ -6934,8 +6924,12 @@ impl Niri {
             .then(|| self.layout.strip_area(output))
             .flatten();
         let strip_panel = strip.and_then(|_| self.layout.strip_panel_area(output));
+        let style = self
+            .layout
+            .strip_style(output)
+            .unwrap_or(self.config.borrow().strip);
         let edge = if strip.is_some() {
-            LimboEdge::Right
+            style.position
         } else {
             edge
         };
@@ -6946,6 +6940,8 @@ impl Niri {
             overview,
             strip,
             strip_panel,
+            zoom: 1.,
+            style,
         }
     }
 
@@ -7676,6 +7672,23 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+/// The layout overrides of an output, with the keys outside its `layout {}` section folded in.
+fn output_layout_config(config: &niri_config::Output) -> Option<niri_config::LayoutPart> {
+    let mut layout_config = config.layout.clone().map(|x| x.0);
+    // Support the deprecated non-layout background-color key.
+    if let Some(layout) = &mut layout_config {
+        if layout.background_color.is_none() {
+            layout.background_color = config.background_color;
+        }
+    }
+    // The output's `strip {}` goes on top of a `strip {}` in its `layout {}`.
+    if let Some(strip) = &config.strip {
+        let layout = layout_config.get_or_insert_with(Default::default);
+        layout.strip = Some(layout.strip.unwrap_or_default().with(strip));
+    }
+    layout_config
 }
 
 fn scale_relocate_crop<E: Element>(

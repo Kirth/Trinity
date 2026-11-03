@@ -8,7 +8,7 @@ use knuffel::Decode;
 use niri_ipc::{ConfiguredMode, HSyncPolarity, Transform, VSyncPolarity};
 
 use crate::gestures::HotCorners;
-use crate::{Color, FloatOrInt, LayoutPart};
+use crate::{Color, FloatOrInt, LayoutPart, StripPart};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Outputs(pub Vec<Output>);
@@ -78,6 +78,9 @@ pub struct Output {
     pub hot_corners: Option<HotCorners>,
     #[knuffel(child)]
     pub layout: Option<OutputLayoutPart>,
+    /// Overrides for the strip on this output.
+    #[knuffel(child)]
+    pub strip: Option<StripPart>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,6 +139,7 @@ impl Default for Output {
             backdrop_color: None,
             hot_corners: None,
             layout: None,
+            strip: None,
         }
     }
 }

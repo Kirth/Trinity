@@ -5,7 +5,9 @@ use crate::appearance::{
     Border, FocusRing, InsertHint, Shadow, TabIndicator, DEFAULT_BACKGROUND_COLOR,
 };
 use crate::utils::{expect_only_children, Flag, MergeWith};
-use crate::{BorderRule, Color, FloatOrInt, InsertHintPart, ShadowRule, TabIndicatorPart};
+use crate::{
+    BorderRule, Color, FloatOrInt, InsertHintPart, ShadowRule, StripPart, TabIndicatorPart,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
@@ -147,6 +149,9 @@ pub struct LayoutPart {
     pub struts: Option<Struts>,
     #[knuffel(child)]
     pub background_color: Option<Color>,
+    /// Overrides for the strip, on top of the `strip {}` section.
+    #[knuffel(child)]
+    pub strip: Option<StripPart>,
 }
 
 /// Picture-in-picture style windows floating in a corner of the screen.

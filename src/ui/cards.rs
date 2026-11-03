@@ -393,7 +393,9 @@ pub fn icon_loc(
 ) -> Point<f64, Logical> {
     let y = card.loc.y + card.size.h - ICON_INSET - size.h;
     match edge {
-        LimboEdge::Right | LimboEdge::Bottom => Point::from((card.loc.x + ICON_INSET, y)),
+        LimboEdge::Right | LimboEdge::Top | LimboEdge::Bottom => {
+            Point::from((card.loc.x + ICON_INSET, y))
+        }
         LimboEdge::Left => Point::from((card.loc.x + card.size.w - ICON_INSET - size.w, y)),
     }
 }
@@ -417,15 +419,17 @@ pub fn caption_loc(
     match edge {
         LimboEdge::Right => Point::from((card.loc.x - gap - size.w, center.y - size.h / 2.)),
         LimboEdge::Left => Point::from((card.loc.x + card.size.w + gap, center.y - size.h / 2.)),
+        LimboEdge::Top => Point::from((center.x - size.w / 2., card.loc.y + card.size.h + gap)),
         LimboEdge::Bottom => Point::from((center.x - size.w / 2., card.loc.y - gap - size.h)),
     }
 }
 
-/// Position of a point along the drawer's edge: down it at the sides, across it at the bottom.
+/// Position of a point along the drawer's edge: down it at the sides, across it at the top and
+/// bottom.
 pub fn along_edge(edge: LimboEdge, point: Point<f64, Logical>) -> f64 {
     match edge {
         LimboEdge::Left | LimboEdge::Right => point.y,
-        LimboEdge::Bottom => point.x,
+        LimboEdge::Top | LimboEdge::Bottom => point.x,
     }
 }
 
@@ -439,6 +443,7 @@ pub fn is_past_card(
     match edge {
         LimboEdge::Right => point.x < card.loc.x - distance,
         LimboEdge::Left => point.x > card.loc.x + card.size.w + distance,
+        LimboEdge::Top => point.y > card.loc.y + card.size.h + distance,
         LimboEdge::Bottom => point.y < card.loc.y - distance,
     }
 }

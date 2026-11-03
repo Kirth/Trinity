@@ -420,8 +420,8 @@ pub struct Options {
     pub deactivate_unfocused_windows: bool,
     /// Draw the outlines of i3 containers.
     pub debug_containers: bool,
-    /// Which workspaces share a strip, in i3 mode.
-    pub strip_share: niri_config::StripShare,
+    /// Place and look of the strip, in i3 mode.
+    pub strip: niri_config::Strip,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -694,7 +694,7 @@ impl Options {
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
             debug_containers: config.debug.show_i3_containers,
-            strip_share: config.strip.share,
+            strip: config.strip,
         }
         .with_i3_overrides()
     }
@@ -702,6 +702,12 @@ impl Options {
     fn with_merged_layout(mut self, part: Option<&niri_config::LayoutPart>) -> Self {
         if let Some(part) = part {
             self.layout.merge_with(part);
+            if let Some(strip) = &part.strip {
+                // Which workspaces share a strip can only be set globally.
+                let share = self.strip.share;
+                self.strip.merge_with(strip);
+                self.strip.share = share;
+            }
         }
         self.with_i3_overrides()
     }
@@ -5821,6 +5827,15 @@ impl<W: LayoutElement> Layout<W> {
             .strip_area()
     }
 
+    /// Place and look of the strip of the active workspace on this output.
+    pub fn strip_style(&self, output: &Output) -> Option<niri_config::Strip> {
+        Some(
+            self.monitor_for_output(output)?
+                .active_workspace_ref()
+                .strip_style(),
+        )
+    }
+
     /// Where the panel behind the strip of the active workspace on this output goes, in
     /// output-local coordinates, while it has windows.
     pub fn strip_panel_area(&self, output: &Output) -> Option<Rectangle<f64, Logical>> {
@@ -5867,7 +5882,7 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
 
-        match self.options.strip_share {
+        match self.options.strip.share {
             StripShare::Workspace => (),
             StripShare::Output => {
                 for mon in monitors {

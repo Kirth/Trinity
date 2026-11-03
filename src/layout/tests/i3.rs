@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use niri_config::LimboEdge;
 use niri_ipc::SizeChange;
 use smithay::utils::{Logical, Point, Size};
 
 use super::*;
 use crate::layout::tiling::{ContainerLayout, LayoutCommand, SplitCommand};
-use crate::layout::workspace::STRIP_WIDTH;
 
 fn i3_options() -> Options {
     Options {
@@ -836,7 +836,7 @@ fn stashing_makes_room_for_the_strip() {
     let layout = tiling_layout([add_window(1), add_window(2), add_window(3), Op::Stash(3)]);
     assert_eq!(strip(&layout), [3]);
     assert!(!positions(&layout).contains_key(&3));
-    assert!(right_edge(&layout) <= before - STRIP_WIDTH + 1.);
+    assert!(right_edge(&layout) <= before - 216. + 1.);
 
     // Without windows in the strip, the layout gets the room back.
     let layout = tiling_layout([
@@ -913,6 +913,72 @@ fn activating_a_strip_window_swaps_it_in() {
     assert_eq!(focused(&layout), 1);
 }
 
+fn strip_layout(position: LimboEdge, size: niri_config::StripSize) -> Layout<TestWindow> {
+    let options = Options {
+        strip: niri_config::Strip {
+            position,
+            size,
+            ..Default::default()
+        },
+        ..i3_options()
+    };
+    check_ops_with_options(
+        options,
+        [
+            Op::AddOutput(1),
+            add_window(1),
+            add_window(2),
+            add_window(3),
+            Op::Stash(3),
+            Op::CompleteAnimations,
+        ],
+    )
+}
+
+#[test]
+fn strip_at_the_bottom_takes_room_from_below() {
+    let size = niri_config::StripSize::Proportion(0.25);
+    let layout = strip_layout(LimboEdge::Bottom, size);
+    let ws = layout.active_workspace().unwrap();
+    let area = monitors(&layout)[0].working_area();
+    let strip = ws.strip_area().unwrap();
+    assert_eq!(strip.size.w, area.size.w);
+    assert_eq!(strip.size.h, area.size.h * 0.25);
+    assert_eq!(strip.loc.y + strip.size.h, area.loc.y + area.size.h);
+
+    // The panel runs from the strip to the bottom of the screen.
+    let panel = ws.strip_panel_area().unwrap();
+    assert_eq!(panel.loc.y, strip.loc.y);
+    assert_eq!(panel.size.w, ws.view_size().w);
+
+    // The windows keep the whole width, above the strip.
+    for (tile, pos, _) in ws.tiles_with_render_positions() {
+        let size = tile.tile_expected_or_current_size();
+        assert!(pos.y + size.h <= strip.loc.y + 0.001);
+    }
+    assert!(right_edge(&layout) > area.size.w - 216.);
+}
+
+#[test]
+fn strip_at_the_left_and_top_pushes_windows_away() {
+    let size = niri_config::StripSize::Fixed(100.);
+    let layout = strip_layout(LimboEdge::Left, size);
+    let ws = layout.active_workspace().unwrap();
+    let strip = ws.strip_area().unwrap();
+    assert_eq!(strip.size.w, 100.);
+    for (_, pos, _) in ws.tiles_with_render_positions() {
+        assert!(pos.x >= strip.loc.x + 100. - 0.001);
+    }
+
+    let layout = strip_layout(LimboEdge::Top, size);
+    let ws = layout.active_workspace().unwrap();
+    let strip = ws.strip_area().unwrap();
+    assert_eq!(strip.size.h, 100.);
+    for (_, pos, _) in ws.tiles_with_render_positions() {
+        assert!(pos.y >= strip.loc.y + 100. - 0.001);
+    }
+}
+
 #[test]
 fn closing_the_last_laid_out_window_keeps_the_strip() {
     let layout = tiling_layout([
@@ -930,7 +996,10 @@ fn closing_the_last_laid_out_window_keeps_the_strip() {
 #[test]
 fn strip_is_per_workspace() {
     let options = Options {
-        strip_share: niri_config::StripShare::Workspace,
+        strip: niri_config::Strip {
+            share: niri_config::StripShare::Workspace,
+            ..Default::default()
+        },
         ..i3_options()
     };
     let layout = check_ops_with_options(

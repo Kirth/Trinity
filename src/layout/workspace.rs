@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    CenterFocusedColumn, CornerRadius, OutputName, PresetSize, Workspace as WorkspaceConfig,
+    CenterFocusedColumn, CornerRadius, LimboEdge, OutputName, PresetSize,
+    Workspace as WorkspaceConfig,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
 use smithay::backend::renderer::element::Kind;
@@ -127,7 +128,7 @@ pub struct Workspace<W: LayoutElement> {
     /// Layout config overrides for this workspace.
     layout_config: Option<niri_config::LayoutPart>,
 
-    /// Windows set aside in the strip at the right edge, newest first.
+    /// Windows set aside in the strip at the edge, newest first.
     ///
     /// They stay on this workspace and its output, but out of the layout, which shrinks to make
     /// room for them while there are any.
@@ -136,9 +137,6 @@ pub struct Workspace<W: LayoutElement> {
     /// Unique ID of this workspace.
     id: WorkspaceId,
 }
-
-/// Width of the strip at the right edge of a workspace, in logical pixels.
-pub const STRIP_WIDTH: f64 = 216.;
 
 /// A window set aside in a workspace's strip.
 #[derive(Debug)]
@@ -507,15 +505,6 @@ impl<W: LayoutElement> Workspace<W> {
             options.clone(),
         );
 
-        let tiling_area = self.tiling_area();
-        if let Some(tiling) = &mut self.tiling {
-            tiling.update_config(
-                self.view_size,
-                tiling_area,
-                self.scale.fractional_scale(),
-                options.clone(),
-            );
-        }
         for entry in &mut self.strip {
             entry
                 .removed
@@ -532,7 +521,8 @@ impl<W: LayoutElement> Workspace<W> {
 
         self.base_options = base_options;
         self.options = options;
-        self.resize_strip_tiles();
+        // After the options, which say where the strip goes.
+        self.update_tiling_area();
 
         self.update_layout_mode();
     }
@@ -2625,33 +2615,93 @@ impl<W: LayoutElement> Workspace<W> {
     /// The area for the tiled windows: the working area, minus the strip while it has windows.
     fn tiling_area(&self) -> Rectangle<f64, Logical> {
         let mut area = self.working_area;
-        if !self.strip.is_empty() {
-            area.size.w = (area.size.w - STRIP_WIDTH).max(1.);
+        if self.strip.is_empty() {
+            return area;
         }
+        let size = self.strip_size();
+        match self.strip_edge() {
+            LimboEdge::Left => {
+                area.loc.x += size;
+                area.size.w -= size;
+            }
+            LimboEdge::Right => area.size.w -= size,
+            LimboEdge::Top => {
+                area.loc.y += size;
+                area.size.h -= size;
+            }
+            LimboEdge::Bottom => area.size.h -= size,
+        }
+        area.size.w = area.size.w.max(1.);
+        area.size.h = area.size.h.max(1.);
         area
     }
 
-    /// Where the strip shows, in workspace coordinates, while it has windows.
+    /// Place and look of the strip.
+    pub fn strip_style(&self) -> niri_config::Strip {
+        self.options.strip
+    }
+
+    /// Edge of the screen where the strip sits.
+    pub fn strip_edge(&self) -> LimboEdge {
+        self.options.strip.position
+    }
+
+    /// How far the strip reaches into the working area, in logical pixels.
+    pub fn strip_size(&self) -> f64 {
+        let across = match self.strip_edge() {
+            LimboEdge::Left | LimboEdge::Right => self.working_area.size.w,
+            LimboEdge::Top | LimboEdge::Bottom => self.working_area.size.h,
+        };
+        self.options.strip.size.resolve(across)
+    }
+
+    /// Where the strip shows, in workspace coordinates, while it has windows: along its edge of
+    /// the working area.
     pub fn strip_area(&self) -> Option<Rectangle<f64, Logical>> {
         if self.strip.is_empty() {
             return None;
         }
         let area = self.working_area;
-        let w = STRIP_WIDTH.min(area.size.w);
-        Some(Rectangle::new(
-            Point::from((area.loc.x + area.size.w - w, area.loc.y)),
-            Size::from((w, area.size.h)),
-        ))
+        let size = self.strip_size();
+        let (loc, size) = match self.strip_edge() {
+            LimboEdge::Left => (area.loc, Size::from((size, area.size.h))),
+            LimboEdge::Right => (
+                Point::from((area.loc.x + area.size.w - size, area.loc.y)),
+                Size::from((size, area.size.h)),
+            ),
+            LimboEdge::Top => (area.loc, Size::from((area.size.w, size))),
+            LimboEdge::Bottom => (
+                Point::from((area.loc.x, area.loc.y + area.size.h - size)),
+                Size::from((area.size.w, size)),
+            ),
+        };
+        Some(Rectangle::new(loc, size))
     }
 
     /// Where the panel behind the strip goes, in workspace coordinates, while it has windows:
-    /// from the strip to the right edge, and from the top to the bottom of the workspace.
+    /// from the strip to its edge of the workspace, and all along that edge.
     pub fn strip_panel_area(&self) -> Option<Rectangle<f64, Logical>> {
         let strip = self.strip_area()?;
-        Some(Rectangle::new(
-            Point::from((strip.loc.x, 0.)),
-            Size::from((self.view_size.w - strip.loc.x, self.view_size.h)),
-        ))
+        let view = self.view_size;
+        let (loc, size) = match self.strip_edge() {
+            LimboEdge::Left => (
+                Point::from((0., 0.)),
+                Size::from((strip.loc.x + strip.size.w, view.h)),
+            ),
+            LimboEdge::Right => (
+                Point::from((strip.loc.x, 0.)),
+                Size::from((view.w - strip.loc.x, view.h)),
+            ),
+            LimboEdge::Top => (
+                Point::from((0., 0.)),
+                Size::from((view.w, strip.loc.y + strip.size.h)),
+            ),
+            LimboEdge::Bottom => (
+                Point::from((0., strip.loc.y)),
+                Size::from((view.w, view.h - strip.loc.y)),
+            ),
+        };
+        Some(Rectangle::new(loc, size))
     }
 
     /// Hands the tiling layout its area again, after the strip filled up or emptied, and sizes

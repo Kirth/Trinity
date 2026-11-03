@@ -60,7 +60,7 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputLayoutPart, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
-pub use crate::strip::{Strip, StripShare};
+pub use crate::strip::{Strip, StripPart, StripShare, StripSize};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
@@ -288,7 +288,12 @@ where
                         }
                     }
 
-                    config.borrow_mut().layout.merge_with(&part);
+                    let mut config = config.borrow_mut();
+                    config.layout.merge_with(&part);
+                    // `layout { strip {} }` is the same as `strip {}`.
+                    if let Some(strip) = &part.strip {
+                        config.strip.merge_with(strip);
+                    }
                 }
 
                 "recent-windows" => {
@@ -849,6 +854,31 @@ mod tests {
             assert_eq!(do_parse(&config).strip.share, share);
         }
         assert!(Config::parse_mem(r#"strip { share "monitor"; }"#).is_err());
+        assert_eq!(default.position, LimboEdge::Right);
+        assert_eq!(default.size, StripSize::Fixed(216.));
+        let strip = do_parse(r#"strip { position "bottom"; size "20%"; }"#).strip;
+        assert_eq!(strip.position, LimboEdge::Bottom);
+        assert_eq!(strip.size, StripSize::Proportion(0.2));
+        assert_eq!(
+            do_parse("strip { size 180.5; }").strip.size,
+            StripSize::Fixed(180.5)
+        );
+        assert_eq!(
+            do_parse(r#"layout { strip { position "top"; }; }"#)
+                .strip
+                .position,
+            LimboEdge::Top
+        );
+        assert!(Config::parse_mem(r#"strip { size "20"; }"#).is_err());
+        assert!(Config::parse_mem(r#"strip { size "150%"; }"#).is_err());
+        assert!(Config::parse_mem("strip { size 0; }").is_err());
+        assert_eq!(StripSize::Proportion(0.25).resolve(1080.), 270.);
+        assert_eq!(StripSize::Fixed(5000.).resolve(1080.), 1080.);
+
+        let config = do_parse(r#"output "DP-2" { strip { position "bottom"; size "18%"; }; }"#);
+        let strip = config.outputs.0[0].strip.unwrap();
+        assert_eq!(strip.position, Some(LimboEdge::Bottom));
+        assert_eq!(strip.size, Some(StripSize::Proportion(0.18)));
         assert_eq!(
             do_parse(r#"limbo { edge "bottom"; }"#).limbo.edge,
             LimboEdge::Bottom
@@ -1455,6 +1485,7 @@ mod tests {
                             },
                         ),
                         layout: None,
+                        strip: None,
                     },
                     Output {
                         off: false,
@@ -1482,6 +1513,7 @@ mod tests {
                         backdrop_color: None,
                         hot_corners: None,
                         layout: None,
+                        strip: None,
                     },
                     Output {
                         off: false,
@@ -1512,6 +1544,7 @@ mod tests {
                         backdrop_color: None,
                         hot_corners: None,
                         layout: None,
+                        strip: None,
                     },
                 ],
             ),
@@ -2705,6 +2738,10 @@ mod tests {
                 },
                 corner_radius: 0.0,
                 share: Output,
+                position: Right,
+                size: Fixed(
+                    216.0,
+                ),
             },
         }
         "#);

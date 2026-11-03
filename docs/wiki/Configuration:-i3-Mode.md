@@ -72,10 +72,10 @@ binds {
 
 #### The strip
 
-The strip sits at the right edge of the screen and holds windows you want out of the way for now, but still in sight.
+The strip sits at the right edge of the screen (or [another edge](#where-the-strip-goes)) and holds windows you want out of the way for now, but still in sight.
 By default each output has one strip, which comes along when you switch workspaces on that output.
 Windows in the strip show as live thumbnails, newest on top, and the rest of the workspace keeps its usual layout in the room that's left.
-With no windows in the strip, there's no strip, and the layout gets the whole width back.
+With no windows in the strip, there's no strip, and the layout gets the room back.
 The last window outside the strip never goes in: if it closes, the newest window in the strip comes back in its place.
 
 To set a window aside, move it all the way to the right with `move-column-right`, then press `move-column-right` three more times in quick succession (each within 400 ms of the last): the window flies into the strip in a puff of smoke.
@@ -94,7 +94,7 @@ Activating a window in the strip any other way, like clicking its notification o
 
 Two actions swap from the keyboard:
 
-- `swap-with-strip N` swaps the Nth window in the strip, counting from 1 at the top. Since the swapped-out window goes to the top, `swap-with-strip 1` goes back and forth between two windows.
+- `swap-with-strip N` swaps the Nth window in the strip, counting from 1 at the top (or the left, for a strip at the top or bottom). Since the swapped-out window goes to the top, `swap-with-strip 1` goes back and forth between two windows.
 - `cycle-strip` swaps the bottom window in, so pressing it repeatedly walks through every window on the workspace.
 
 ```kdl
@@ -116,6 +116,35 @@ strip {
     share "all"
 }
 ```
+
+##### Where the strip goes
+
+Set where the strip sits and how much room it takes in the `strip {}` section.
+`position` is the edge of the screen: `"right"` (the default), `"left"`, `"top"` or `"bottom"`.
+At the top and bottom, the thumbnails go in a row from the left.
+`size` is how far the strip reaches into the screen, its width at the sides and its height at the top and bottom: a number of logical pixels (216 by default), or a percentage of the screen's working area, like `"20%"`.
+
+```kdl
+strip {
+    position "right"
+    size "12%"
+}
+```
+
+An `output` can have a `strip {}` section of its own, which goes on top of the main one.
+It takes all the same settings except `share`: for example, on a screen turned on its side a strip along the bottom leaves more room for windows.
+
+```kdl
+output "DP-2" {
+    transform "90"
+    strip {
+        position "bottom"
+        size "18%"
+    }
+}
+```
+
+The poof gesture and flinging a window with the mouse always use the right edge, wherever the strip is.
 
 The limbo actions below work on the strip too while limbo is off: `move-window-to-limbo` sets a window aside, and `pull-from-limbo` and `toggle-limbo-window` bring the newest one back next to the focused window.
 
@@ -193,13 +222,13 @@ With more windows in limbo than fit legibly, the drawer shows as many as it can;
 The drawer hides behind a focused fullscreen window.
 In the overview, the windows in limbo show instead in a row below the workspaces, newest first: clicking one brings it back and leaves the overview, and dragging one out lets you drop it on any workspace.
 
-The drawer can also sit on the left or bottom edge.
+The drawer can also sit on the left, top or bottom edge.
 The poof gesture and flinging always use the right edge.
 
 ```kdl
 limbo {
     legacy-mode
-    // Where the drawer of windows in limbo sits: "left", "right" (default) or "bottom".
+    // Where the drawer of windows in limbo sits: "left", "right" (default), "top" or "bottom".
     edge "bottom"
 }
 ```

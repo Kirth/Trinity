@@ -32,5 +32,6 @@ pub enum LimboEdge {
     Left,
     #[default]
     Right,
+    Top,
     Bottom,
 }
