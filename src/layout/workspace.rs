@@ -2189,11 +2189,19 @@ impl<W: LayoutElement> Workspace<W> {
             .iter()
             .flat_map(|t| t.tiles_with_render_positions());
 
-        let floating = self.floating.tiles_with_render_positions();
+        // Floating windows that sank behind the tiled ones come after them.
         let visible = self.is_floating_visible();
-        let floating = floating.map(move |(tile, pos)| (tile, pos, visible));
+        let floating = |front| {
+            self.floating
+                .tiles_with_render_positions()
+                .filter(move |(tile, _)| self.floating_tile_in_front(tile) == front)
+                .map(move |(tile, pos)| (tile, pos, visible))
+        };
 
-        floating.chain(tiling).chain(scrolling)
+        floating(true)
+            .chain(tiling)
+            .chain(floating(false))
+            .chain(scrolling)
     }
 
     pub fn tiles_with_render_positions_mut(
@@ -2268,12 +2276,14 @@ impl<W: LayoutElement> Workspace<W> {
             });
     }
 
+    /// Renders the floating windows in front of the tiled windows, or those behind them.
     pub fn render_floating<R: NiriRenderer>(
         &self,
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        front: bool,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         if !self.is_floating_visible() && layer.is_normal() {
@@ -2288,8 +2298,21 @@ impl<W: LayoutElement> Workspace<W> {
             view_rect,
             floating_focus_ring,
             layer,
+            &|tile| self.floating_tile_in_front(tile) == front,
+            front,
             &mut |elem| push(elem.into()),
         );
+    }
+
+    /// Whether a floating window goes in front of the tiled windows.
+    ///
+    /// In i3 mode, floating windows sink behind the tiled windows while one of those is focused,
+    /// unless they keep above by a window rule or are in side view.
+    fn floating_tile_in_front(&self, tile: &Tile<W>) -> bool {
+        self.tiling.is_none()
+            || !matches!(self.floating_is_active, FloatingActive::No)
+            || tile.is_side_view()
+            || tile.window().rules().keep_above == Some(true)
     }
 
     pub fn render_shadow<R: NiriRenderer>(
@@ -2440,17 +2463,29 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if let Some(tiling) = &self.tiling {
-            return tiling.window_under(pos);
+            return tiling
+                .window_under(pos)
+                .or_else(|| self.floating_window_under_inner(pos, false));
         }
         self.scrolling.window_under(pos)
     }
 
+    /// The floating window under this position, among those in front of the tiled windows.
     pub fn floating_window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        self.floating_window_under_inner(pos, true)
+    }
+
+    fn floating_window_under_inner(
+        &self,
+        pos: Point<f64, Logical>,
+        front: bool,
+    ) -> Option<(&W, HitType)> {
         if !self.is_floating_visible() {
             return None;
         }
         self.floating
             .tiles_with_render_positions()
+            .filter(|(tile, _)| self.floating_tile_in_front(tile) == front)
             .find_map(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos))
     }
 

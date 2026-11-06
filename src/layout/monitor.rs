@@ -2207,7 +2207,8 @@ impl<W: LayoutElement> Monitor<W> {
         self.render_workspaces_scrolling(ctx, focus_ring, push);
     }
 
-    /// Renders the floating windows of the workspaces, and the insert hint.
+    /// Renders the floating windows of the workspaces in front of the tiled ones, and the insert
+    /// hint.
     pub fn render_workspaces_floating<R: NiriRenderer>(
         &self,
         ctx: RenderCtx<R>,
@@ -2217,14 +2218,14 @@ impl<W: LayoutElement> Monitor<W> {
         self.render_workspace_passes(ctx, focus_ring, 0..2, push);
     }
 
-    /// Renders the tiled windows of the workspaces.
+    /// Renders the tiled windows of the workspaces, and the floating windows behind them.
     pub fn render_workspaces_scrolling<R: NiriRenderer>(
         &self,
         ctx: RenderCtx<R>,
         focus_ring: bool,
         push: &mut dyn FnMut(MonitorRenderElement<R>),
     ) {
-        self.render_workspace_passes(ctx, focus_ring, 2..4, push);
+        self.render_workspace_passes(ctx, focus_ring, 2..6, push);
     }
 
     fn render_workspace_passes<R: NiriRenderer>(
@@ -2263,10 +2264,11 @@ impl<W: LayoutElement> Monitor<W> {
         // - normal floating windows
         // - scrolling windows moving between workspaces
         // - normal scrolling windows
+        // - floating windows behind the tiled ones, moving between workspaces and normal
         for pass in passes {
             // Don't cull when drawing windows moving between workspaces so that windows moving to
             // workspaces off-screen will still render.
-            let cull = matches!(pass, 1 | 3);
+            let cull = matches!(pass, 1 | 3 | 5);
 
             // Crop the elements to prevent them overflowing, currently visible during a workspace
             // switch.
@@ -2320,6 +2322,7 @@ impl<W: LayoutElement> Monitor<W> {
                             xray_pos,
                             focus_ring,
                             RenderLayer::MovingBetweenWorkspaces,
+                            true,
                             push!(),
                         );
                     }
@@ -2329,6 +2332,7 @@ impl<W: LayoutElement> Monitor<W> {
                             xray_pos,
                             focus_ring,
                             RenderLayer::Normal,
+                            true,
                             push!(),
                         );
 
@@ -2351,12 +2355,32 @@ impl<W: LayoutElement> Monitor<W> {
                             push!(),
                         );
                     }
-                    _ => {
+                    3 => {
                         ws.render_scrolling(
                             ctx.r(),
                             xray_pos,
                             focus_ring,
                             RenderLayer::Normal,
+                            push!(),
+                        );
+                    }
+                    4 => {
+                        ws.render_floating(
+                            ctx.r(),
+                            xray_pos,
+                            focus_ring,
+                            RenderLayer::MovingBetweenWorkspaces,
+                            false,
+                            push!(),
+                        );
+                    }
+                    _ => {
+                        ws.render_floating(
+                            ctx.r(),
+                            xray_pos,
+                            focus_ring,
+                            RenderLayer::Normal,
+                            false,
                             push!(),
                         );
                     }

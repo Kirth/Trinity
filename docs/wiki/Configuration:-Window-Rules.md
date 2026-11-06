@@ -99,6 +99,7 @@ window-rule {
 
     geometry-corner-radius 12
     clip-to-geometry true
+    keep-above true
     tiled-state true
     baba-is-float true
 
@@ -931,6 +932,22 @@ layout {
 window-rule {
     geometry-corner-radius 12
     clip-to-geometry true
+}
+```
+
+#### `keep-above`
+
+Keeps a floating window in front of the tiled windows in [i3 mode](./Configuration:-i3-Mode.md#windows).
+
+Floating windows there go behind the tiled windows while a tiled window has focus.
+With `keep-above true`, the window stays in front instead, like a picture-in-picture player.
+It has no effect in the scrolling layout, where floating windows are always in front.
+
+```kdl
+window-rule {
+    match app-id="^mpv$"
+
+    keep-above true
 }
 ```
 

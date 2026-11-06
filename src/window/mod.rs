@@ -108,6 +108,9 @@ pub struct ResolvedWindowRules {
     /// Whether to clip this window to its geometry, including the corner radius.
     pub clip_to_geometry: Option<bool>,
 
+    /// Whether to keep this window floating in front of the tiled windows, in i3 mode.
+    pub keep_above: Option<bool>,
+
     /// Whether to bob this window up and down.
     pub baba_is_float: Option<bool>,
 
@@ -296,6 +299,9 @@ impl ResolvedWindowRules {
                 }
                 if let Some(x) = rule.clip_to_geometry {
                     resolved.clip_to_geometry = Some(x);
+                }
+                if let Some(x) = rule.keep_above {
+                    resolved.keep_above = Some(x);
                 }
                 if let Some(x) = rule.baba_is_float {
                     resolved.baba_is_float = Some(x);

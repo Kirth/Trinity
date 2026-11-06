@@ -34,7 +34,9 @@ After `focus-parent`, moving and resizing act on the whole container.
 You can drag windows with <kbd>Mod</kbd> and the left mouse button: dropping one on the side of another window places it on that side, splitting the other window if needed.
 Dragging a window's edge with <kbd>Mod</kbd> and the right mouse button resizes it against its neighbour.
 
-Floating windows work the same as in the scrolling layout.
+Floating windows work the same as in the scrolling layout, except that they go behind the tiled windows while a tiled window has focus, so the focused window is never covered.
+Focusing a floating window brings them all back in front.
+Side-view windows, and windows with the [`keep-above`](./Configuration:-Window-Rules.md#keep-above) window rule, always stay in front.
 
 ### Workspaces
 
@@ -384,6 +386,7 @@ A side-view window:
 
 - stays in its corner when the window or the screen changes size; `side-view-next-corner` and `side-view-prev-corner` move it clockwise and counter-clockwise, and dragging it snaps it to the nearest corner;
 - follows you when you switch workspaces on its output;
+- stays in front of the tiled windows, even while one of them has focus;
 - is skipped by directional focus and `switch-focus-between-floating-and-tiling`, so it doesn't take your keystrokes; click it or use `focus-window-with-hints` to focus it;
 - leaves side view when it goes fullscreen or maximized, or is toggled out of floating.
 

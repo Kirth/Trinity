@@ -928,6 +928,59 @@ fn activating_a_floating_strip_window_leaves_the_focused_one() {
     assert!(ws.tiles().any(|tile| tile.window().id() == &2));
 }
 
+/// A tiled window 1 with a floating window 2 over it, and the window under the middle of 2.
+fn window_over_float(rules: ResolvedWindowRules, ops: impl IntoIterator<Item = Op>) -> usize {
+    let mut all = vec![
+        add_window(1),
+        Op::AddWindow {
+            params: TestWindowParams {
+                is_floating: true,
+                rules: Some(rules),
+                ..TestWindowParams::new(2)
+            },
+        },
+        Op::Communicate(1),
+        Op::Communicate(2),
+    ];
+    all.extend(ops);
+    let mut layout = tiling_layout(all);
+    let (pos, _) = positions(&layout)[&2];
+    let output = layout.active_output().unwrap().clone();
+    layout.refresh(true);
+    let (win, _) = layout
+        .window_under(&output, pos + Point::from((10., 10.)))
+        .unwrap();
+    *win.id()
+}
+
+#[test]
+fn floating_windows_sink_behind_a_focused_tiled_window() {
+    let rules = ResolvedWindowRules::default();
+    assert_eq!(window_over_float(rules.clone(), []), 2);
+    assert_eq!(window_over_float(rules.clone(), [Op::FocusWindow(1)]), 1);
+    let ops = [Op::FocusWindow(1), Op::FocusWindow(2)];
+    assert_eq!(window_over_float(rules, ops), 2);
+}
+
+#[test]
+fn keep_above_floating_windows_stay_in_front() {
+    let rules = ResolvedWindowRules {
+        keep_above: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(window_over_float(rules, [Op::FocusWindow(1)]), 2);
+}
+
+#[test]
+fn side_view_windows_stay_in_front() {
+    let ops = [
+        Op::ToggleSideView { id: Some(2) },
+        Op::CompleteAnimations,
+        Op::FocusWindow(1),
+    ];
+    assert_eq!(window_over_float(ResolvedWindowRules::default(), ops), 2);
+}
+
 fn strip_layout(position: LimboEdge, size: niri_config::StripSize) -> Layout<TestWindow> {
     let options = Options {
         strip: niri_config::Strip {

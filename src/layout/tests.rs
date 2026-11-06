@@ -350,10 +350,12 @@ prop_compose! {
     fn arbitrary_rules()(
         focus_ring in arbitrary_focus_ring(),
         border in arbitrary_border(),
+        keep_above in prop::option::of(any::<bool>()),
     ) -> ResolvedWindowRules {
         ResolvedWindowRules {
             focus_ring,
             border,
+            keep_above,
             ..ResolvedWindowRules::default()
         }
     }
