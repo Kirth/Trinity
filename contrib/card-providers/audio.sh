@@ -113,8 +113,21 @@ if [ "${1:-}" = "--once" ]; then
 fi
 
 update
-# Wake on PipeWire changes; let a burst of them settle, then look once.
-exec 3< <(pw-dump --monitor --no-colors 2>/dev/null)
+# Wake on changes to playback streams; let a burst of them settle, then look once.
+# Other changes are dropped: each update runs pw-dump, which comes and goes as a PipeWire client,
+# and waking on that would loop forever.
+exec 3< <(pw-dump --monitor --no-colors 2>/dev/null | jq --unbuffered -nr '
+    foreach inputs as $batch ({streams: {}};
+        .changed = false
+        | reduce $batch[] as $o (.;
+            ($o.id | tostring) as $id
+            | if $o.info == null then
+                if .streams[$id] then del(.streams[$id]) | .changed = true else . end
+              elif $o.type == "PipeWire:Interface:Node"
+                and $o.info.props["media.class"]? == "Stream/Output/Audio" then
+                .streams[$id] = true | .changed = true
+              else . end);
+        select(.changed) | "change")')
 while IFS= read -r _ <&3; do
     while IFS= read -r -t 0.2 _ <&3; do :; done
     update
