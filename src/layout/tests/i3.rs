@@ -913,6 +913,21 @@ fn activating_a_strip_window_swaps_it_in() {
     assert_eq!(focused(&layout), 1);
 }
 
+#[test]
+fn activating_a_floating_strip_window_leaves_the_focused_one() {
+    let layout = tiling_layout([
+        add_window(1),
+        add_window(2),
+        Op::ToggleWindowFloating { id: Some(1) },
+        Op::Stash(1),
+        Op::FocusWindow(1),
+    ]);
+    assert!(strip(&layout).is_empty());
+    assert_eq!(focused(&layout), 1);
+    let ws = layout.active_workspace().unwrap();
+    assert!(ws.tiles().any(|tile| tile.window().id() == &2));
+}
+
 fn strip_layout(position: LimboEdge, size: niri_config::StripSize) -> Layout<TestWindow> {
     let options = Options {
         strip: niri_config::Strip {

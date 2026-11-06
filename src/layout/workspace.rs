@@ -2826,11 +2826,15 @@ impl<W: LayoutElement> Workspace<W> {
     /// Swaps a window in the strip with the focused tiled window: it takes that window's place
     /// in the tree, and that window goes first in the strip.
     ///
-    /// Without a focused tiled window, takes the window out of the strip next to the focus.
+    /// Without a focused tiled window, takes the window out of the strip next to the focus. A
+    /// floating window just comes out of the strip, as it takes no place in the tree.
     pub fn swap_with_focused(&mut self, window: &W::Id) -> bool {
         let Some(idx) = self.strip_idx(window) else {
             return false;
         };
+        if self.strip[idx].removed.is_floating {
+            return self.unstash(window, true);
+        }
         let focused = self
             .tiling
             .as_ref()
